@@ -31,8 +31,6 @@ Local Open Scope itree_scope.
 Notation " x '|>' f " := (f x)
   (at level 40, left associativity, only parsing).
 
-
-
 Variant nondet_finE : Type -> Type :=
 | NondetFin : nat -> nondet_finE nat.
 

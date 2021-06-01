@@ -29,7 +29,20 @@ Local Open Scope list.
 Local Open Scope itree_scope.
 (* Local Open Scope monad_scope. *)
 
+Inductive tree (T : Type) : Type :=
+| Tree : T -> list (tree T) -> tree T.
+Arguments Tree {T}.
+
+Fixpoint tree_map_with_context {T Y : Type}
+         (f : list T -> T -> list (tree T) -> Y) (pref : list T) (t : tree T)
+  : tree Y :=
+  let '(Tree x ts) := t in
+  Tree (f pref x ts) (List.map (tree_map_with_context f (x::pref)) ts).
+
 Definition id_t := nat.
+
+Variant wrapE {T}: Type -> Type :=
+| Wrap : forall A E, T -> E A -> wrapE A.
 
 Module Type InstructionsSemantics.
   Variable reg : Type.
