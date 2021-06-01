@@ -1,0 +1,10 @@
+*.vo
+*.vio
+*.v.d
+*.glob
+.*.aux
+
+_CoqProject
+coq.mk
+coq.mk.conf
+.coqdeps.d
