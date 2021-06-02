@@ -31,6 +31,9 @@ Local Open Scope itree_scope.
 Notation " x '|>' f " := (f x)
   (at level 40, left associativity, only parsing).
 
+Definition resum_it {E F} `{E -< F} : itree E ~> itree F :=
+  fun _ it => interp (fun _ e => trigger e) it.
+
 Fixpoint list_replace_nth {T} (n : nat) (x : T) (l : list T) : list T :=
   match n, l with
   | O, _::t => x::t

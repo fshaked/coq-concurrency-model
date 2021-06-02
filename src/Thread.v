@@ -123,7 +123,7 @@ Module Thread (Arch : Arch).
                        | l::locs => trigger (Spawn l)
                                   ;; ret (inl locs)
                        end) next_locs
-      ;; translate inr1 (translate inr1 (Arch.InsSem.denote ast)).
+      ;; resum_it unit (Arch.InsSem.denote ast).
 
   Definition denote (loc : mem_location) : itree (TE mem_location) unit :=
     nondet_scheduler new_instruction [new_instruction loc].
