@@ -77,12 +77,10 @@ Module Thread (Arch : Arch).
   Arguments NondetFin {S}.
   Arguments Spawn {S}.
 
-  Definition TE S := ((nondet_schedulerE S) +' ITEThread +' Arch.InsSem.E).
-
-  CoFixpoint nondet_scheduler {S}
-             (spawn : ktree (TE S) S unit)
-             (its : list (itree (TE S) unit))
-    : itree (TE S) unit :=
+  CoFixpoint nondet_scheduler {E S}
+             (spawn : ktree (nondet_schedulerE S +' E) S unit)
+             (its : list (itree (nondet_schedulerE S +' E) unit))
+    : itree (nondet_schedulerE S +' E) unit :=
     match its with
     | [] => Ret tt
     | _ =>
@@ -96,7 +94,7 @@ Module Thread (Arch : Arch).
              match o with
              | inl1 o' =>
                match o' in nondet_schedulerE _ Y
-                     return X = Y -> itree (TE S) unit with
+                     return X = Y -> itree (nondet_schedulerE S +' E) unit with
                | Spawn s =>
                  fun pf =>
                    let it := k (eq_rect_r (fun T => T) tt pf) in
@@ -112,7 +110,8 @@ Module Thread (Arch : Arch).
          end
     end.
 
-  Definition new_instruction : ktree (TE mem_location) mem_location unit :=
+  Definition new_instruction {E} `{ITEThread -< E} `{Arch.InsSem.E -< E}
+    : ktree (nondet_schedulerE mem_location +' E) mem_location unit :=
     fun loc =>
       mem_val <- trigger (ITEFetch loc)
       ;; ast <- trigger (ITEDecode mem_val)
@@ -125,8 +124,9 @@ Module Thread (Arch : Arch).
                        end) next_locs
       ;; resum_it unit (Arch.InsSem.denote ast).
 
-  Definition denote (loc : mem_location) : itree (TE mem_location) unit :=
-    nondet_scheduler new_instruction [new_instruction loc].
+  Definition denote {E} `{ITEThread -< E} `{Arch.InsSem.E -< E}
+    : ktree (nondet_schedulerE mem_location +' E) mem_location unit :=
+    fun loc => nondet_scheduler new_instruction [new_instruction loc].
 
 
 
