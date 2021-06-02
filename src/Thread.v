@@ -71,12 +71,18 @@ Module Thread (Arch : Arch).
   | ITEDecode : nat -> ITEThread Arch.InsSem.ast
   | ITENextLocs : mem_location -> Arch.InsSem.ast -> ITEThread (list mem_location).
 
-  Notation TE := (nondet_finE +' ITEThread +' Arch.InsSem.E).
+  Variant nondet_schedulerE (S : Type) : Type -> Type :=
+  | NondetFin : nat -> nondet_schedulerE S nat
+  | Spawn : S -> nondet_schedulerE S unit.
+  Arguments NondetFin {S}.
+  Arguments Spawn {S}.
+
+  Definition TE S := ((nondet_schedulerE S) +' ITEThread +' Arch.InsSem.E).
 
   CoFixpoint nondet_scheduler {S}
-             (spawn : ktree TE S unit)
-             (its : list (itree TE unit))
-    : itree TE unit :=
+             (spawn : ktree (TE S) S unit)
+             (its : list (itree (TE S) unit))
+    : itree (TE S) unit :=
     match its with
     | [] => Ret tt
     | _ =>
@@ -86,29 +92,40 @@ Module Thread (Arch : Arch).
            match observe it with
            | RetF _ => Tau (nondet_scheduler spawn (list_remove_nth n its))
            | TauF it => Tau (nondet_scheduler spawn (list_replace_nth n it its))
-           | @VisF _ _ _ X ((inr1 (inl1 (ITENextLocs loc ast))) as o) k =>
-             (* FIXME: I don't know how to convince the type checker that `X = list mem_location`
-                in this case. This is true because of the type of `ITENextLocs`. *)
-             Vis o (fun next_locs =>
-                      nondet_scheduler spawn (List.map spawn next_locs ++
-                                                       list_replace_nth n (k next_locs) its))
            | @VisF _ _ _ X o k =>
-             Vis o (fun x => nondet_scheduler spawn (list_replace_nth n (k x) its))
+             match o with
+             | inl1 o' =>
+               match o' in nondet_schedulerE _ Y
+                     return X = Y -> itree (TE S) unit with
+               | Spawn s =>
+                 fun pf =>
+                   let it := k (eq_rect_r (fun T => T) tt pf) in
+                   Tau (nondet_scheduler spawn (spawn s::list_replace_nth n it its))
+               | _ => fun _ =>
+                       Vis o (fun x => nondet_scheduler spawn (list_replace_nth n (k x) its))
+               end eq_refl
+             | inr1 _ =>
+               Vis o (fun x => nondet_scheduler spawn (list_replace_nth n (k x) its))
+             end
            end
          | None => ITree.spin (* catch fire *)
          end
     end.
 
-  Definition new_instruction : ktree TE mem_location unit :=
+  Definition new_instruction : ktree (TE mem_location) mem_location unit :=
     fun loc =>
       mem_val <- trigger (ITEFetch loc)
       ;; ast <- trigger (ITEDecode mem_val)
-      ;; trigger (ITENextLocs loc ast) (* Note that we don't do anything with the answer here,
-                                        instead, this event is trapped in the scheduler and the
-                                        answer is used there. *)
+      ;; next_locs <- trigger (ITENextLocs loc ast)
+      ;; ITree.iter (fun locs =>
+                       match locs with
+                       | [] => ret (inr tt)
+                       | l::locs => trigger (Spawn l)
+                                  ;; ret (inl locs)
+                       end) next_locs
       ;; translate inr1 (translate inr1 (Arch.InsSem.denote ast)).
 
-  Definition denote (loc : mem_location) : itree TE unit :=
+  Definition denote (loc : mem_location) : itree (TE mem_location) unit :=
     nondet_scheduler new_instruction [new_instruction loc].
 
 
