@@ -71,53 +71,62 @@ Module Thread (Arch : Arch).
   | ITEDecode : nat -> ITEThread Arch.InsSem.ast
   | ITENextLocs : mem_location -> Arch.InsSem.ast -> ITEThread (list mem_location).
 
-  Notation TE := (nondet_finE +' ITEThread +' Arch.InsSem.E).
+  Variant nondet_schedulerE (S : Type) : Type -> Type :=
+  | NondetFin : nat -> nondet_schedulerE S nat
+  | Spawn : S -> nondet_schedulerE S unit.
+  Arguments NondetFin {S}.
+  Arguments Spawn {S}.
+
+  Definition TE S := ((nondet_schedulerE S) +' ITEThread +' Arch.InsSem.E).
 
   CoFixpoint nondet_scheduler {S}
-             (spawn : ktree TE S (itree TE unit * list S))
-             (q : list S)
-             (its : list (itree TE unit))
-    : itree TE unit :=
-    match (q, its) with
-    | ([], []) => Ret tt
+             (spawn : ktree (TE S) S unit)
+             (its : list (itree (TE S) unit))
+    : itree (TE S) unit :=
+    match its with
+    | [] => Ret tt
     | _ =>
-      n <- trigger (NondetFin (List.length q + List.length its))
-      ;; match List.nth_error q n with
-         | Some s =>
-           '(it, ss) <- spawn s
-           ;; Tau (nondet_scheduler spawn (ss ++ list_remove_nth n q) (it::its))
-         | None =>
-           let n := n - List.length q in
-           match List.nth_error its n with
-           | Some it =>
-             match observe it with
-             | RetF _ => Tau (nondet_scheduler spawn q (list_remove_nth n its))
-             | TauF it => Tau (nondet_scheduler spawn q (list_replace_nth n it its))
-             (* | @VisF _ _ _ X (inr1 (inl1 (ITENextLocs loc ast))) k => *)
-             (*   Vis (inr1 (inl1 (ITENextLocs loc ast))) *)
-             (*       (fun next_locs => *)
-             (*          nondet_scheduler spawn (List.map spawn next_locs ++ *)
-             (*                                           list_replace_nth n (k next_locs) its)) *)
-             | @VisF _ _ _ X o k =>
-               Vis o (fun x => nondet_scheduler spawn q (list_replace_nth n (k x) its))
+      n <- trigger (NondetFin (List.length its))
+      ;; match List.nth_error its n with
+         | Some it =>
+           match observe it with
+           | RetF _ => Tau (nondet_scheduler spawn (list_remove_nth n its))
+           | TauF it => Tau (nondet_scheduler spawn (list_replace_nth n it its))
+           | @VisF _ _ _ X o k =>
+             match o with
+             | inl1 o' =>
+               match o' in nondet_schedulerE _ Y
+                     return X = Y -> itree (TE S) unit with
+               | Spawn s =>
+                 fun pf =>
+                   let it := k (eq_rect_r (fun T => T) tt pf) in
+                   Tau (nondet_scheduler spawn (spawn s::list_replace_nth n it its))
+               | _ => fun _ =>
+                       Vis o (fun x => nondet_scheduler spawn (list_replace_nth n (k x) its))
+               end eq_refl
+             | inr1 _ =>
+               Vis o (fun x => nondet_scheduler spawn (list_replace_nth n (k x) its))
              end
-           | None => ITree.spin (* catch fire *)
            end
+         | None => ITree.spin (* catch fire *)
          end
     end.
 
-  Definition new_instruction : ktree TE mem_location (itree TE unit * list mem_location) :=
+  Definition new_instruction : ktree (TE mem_location) mem_location unit :=
     fun loc =>
       mem_val <- trigger (ITEFetch loc)
       ;; ast <- trigger (ITEDecode mem_val)
       ;; next_locs <- trigger (ITENextLocs loc ast)
-      ;; let it :=
-             (* interp id_ (Arch.InsSem.denote ast) in *)
-             translate inr1 (translate inr1 (Arch.InsSem.denote ast)) in
-         ret (it, next_locs).
+      ;; ITree.iter (fun locs =>
+                       match locs with
+                       | [] => ret (inr tt)
+                       | l::locs => trigger (Spawn l)
+                                  ;; ret (inl locs)
+                       end) next_locs
+      ;; resum_it unit (Arch.InsSem.denote ast).
 
-  Definition denote (loc : mem_location) : itree TE unit :=
-    nondet_scheduler new_instruction [loc] [].
+  Definition denote (loc : mem_location) : itree (TE mem_location) unit :=
+    nondet_scheduler new_instruction [new_instruction loc].
 
 
 
