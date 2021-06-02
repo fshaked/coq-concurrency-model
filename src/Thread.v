@@ -73,8 +73,8 @@ Module Thread (Arch : Arch).
 
   Notation TE := (nondet_finE +' ITEThread +' Arch.InsSem.E).
 
-  CoFixpoint nondet_scheduler {S}
-             (spawn : ktree TE S unit)
+  CoFixpoint nondet_scheduler
+             (spawn : ktree TE (mem_location) unit)
              (its : list (itree TE unit))
     : itree TE unit :=
     match its with
@@ -86,12 +86,15 @@ Module Thread (Arch : Arch).
            match observe it with
            | RetF _ => Tau (nondet_scheduler spawn (list_remove_nth n its))
            | TauF it => Tau (nondet_scheduler spawn (list_replace_nth n it its))
-           | @VisF _ _ _ X ((inr1 (inl1 (ITENextLocs loc ast))) as o) k =>
-             (* FIXME: I don't know how to convince the type checker that `X = list mem_location`
-                in this case. This is true because of the type of `ITENextLocs`. *)
+           | @VisF _ _ _ X ((inr1 (inl1 s)) as o) k =>
+             (match s in ITEThread Y return X = Y -> _ with
+             | (ITENextLocs loc ast) => fun pf =>
              Vis o (fun next_locs =>
-                      nondet_scheduler spawn (List.map spawn next_locs ++
+                      nondet_scheduler spawn (List.map spawn (eq_rect _ id next_locs _ pf) ++
                                                        list_replace_nth n (k next_locs) its))
+             | _ => fun _ =>
+               Vis o (fun x => nondet_scheduler spawn (list_replace_nth n (k x) its))
+              end) eq_refl
            | @VisF _ _ _ X o k =>
              Vis o (fun x => nondet_scheduler spawn (list_replace_nth n (k x) its))
            end
