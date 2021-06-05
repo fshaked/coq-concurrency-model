@@ -29,22 +29,16 @@ Local Open Scope list.
 Local Open Scope itree_scope.
 (* Local Open Scope monad_scope. *)
 
-Inductive tree (T : Type) : Type :=
-| Tree : T -> list (tree T) -> tree T.
-Arguments Tree {T}.
+(* The [sum1] types with automatic application of commutativity and
+   associativity are prone to infinite instance resolution loops.
+   This bounds the instance search depth: *)
+Typeclasses eauto := 5.
 
-Fixpoint tree_map_with_context {T Y : Type}
-         (f : list T -> T -> list (tree T) -> Y) (pref : list T) (t : tree T)
-  : tree Y :=
-  let '(Tree x ts) := t in
-  Tree (f pref x ts) (List.map (tree_map_with_context f (x::pref)) ts).
+Variant result : Type :=
+| Accept
+| Reject.
 
-Definition id_t := nat.
-
-Variant wrapE {T}: Type -> Type :=
-| Wrap : forall A E, T -> E A -> wrapE A.
-
-Module Type InstructionsSemantics.
+Module Type InstructionSemanticsSig.
   Variable reg : Type.
   Variable reg_size : reg -> nat.
 
@@ -61,26 +55,38 @@ Module Type InstructionsSemantics.
   Variable regs_from_ast
     : ast -> (ListSet.set reg_slc * ListSet.set reg_slc * ListSet.set reg_slc).
 
-  Context {E : Type -> Type}.
+  Variant regE : Type -> Type :=
+  | RegERead : reg_slc -> regE reg_val
+  | RegEWrite : reg_slc -> reg_val -> regE unit.
 
-  Variant ITEReg : Type -> Type :=
-  | ITERegRead : reg_slc -> ITEReg reg_val
-  | ITERegWrite : reg_slc -> reg_val -> ITEReg unit.
-  Context {HasITEReg : ITEReg -< E}.
+  Variant memE : Type -> Type :=
+  | MemERead : nat -> memE nat
+  | MemEWrite : nat -> nat -> memE unit.
 
-  Variant ITEMem : Type -> Type :=
-  | ITEMemRead : nat -> ITEMem nat
-  | ITEMemWrite : nat -> nat -> ITEMem unit.
-  Context {HasITEMem : ITEMem -< E}.
+  Definition E := (regE +' memE).
 
-  Definition sem_t := itree E unit.
   Variable denote : ktree E ast unit.
-End InstructionsSemantics.
 
-Module Type Arch.
-  Declare Module InsSem : InstructionsSemantics.
+  Definition machine_code : Type := nat.
+  Variable decode : machine_code -> ast.
+
+  Definition pc_t : Type := nat.
+  Variable next_pc : pc_t -> ast -> list pc_t.
+End InstructionSemanticsSig.
+
+Module Type ArcSig.
+  Declare Module InsSem : InstructionSemanticsSig.
+
+  Definition mem_loc := nat.
+  Record mem_slc : Type :=
+    mk_mem_slc { addr : mem_loc;
+                 size: nat (* in bytes *) }.
+  Definition mem_slc_val := nat.
 
   Variable instruction_kind : Type.
   Variable instruction_kind_from_ast : InsSem.ast -> instruction_kind.
   (* Variable instruction_semantics_state : Type. *)
-End Arch.
+End ArcSig.
+
+Module Type ThreadSig.
+End ThreadSig.
