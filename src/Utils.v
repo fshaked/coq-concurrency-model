@@ -6,7 +6,8 @@ From Coq Require Import
      (* Strings.String *)
      Morphisms
      Setoid
-     RelationClasses .
+     RelationClasses
+     Vectors.Fin.
 
 From ExtLib Require Import
      Structures.Monads
@@ -74,50 +75,72 @@ Variant wrapE E T : Type -> Type :=
 | Wrap : forall A, E A -> T -> wrapE E T A.
 Arguments Wrap {E T A}.
 
-Definition wrap_it {T E F} `{wrapE E T -< F} (d : T) : itree E ~> itree F :=
-  fun _ it => interp (fun _ e => trigger (Wrap e d)) it.
+Definition wrap_event_in_it (E : Type -> Type) {T : Type} (t : T) {F}
+  : itree (E +' F) ~> itree (wrapE E T +' F) :=
+  fun _ it =>
+    let handle_E : E ~> itree (wrapE E T) := fun _ e => trigger (Wrap e t) in
+    let h := bimap handle_E (id_ F) in
+    interp h it.
 
+Definition map_wrap_event_in_it (E : Type -> Type) {T U : Type} (f : T -> U) {F}
+  : itree (wrapE E T +' F) ~> itree (wrapE E U +' F) :=
+  fun _ it =>
+    let handle_WE : wrapE E T ~> itree (wrapE E U) := fun _ '(Wrap e t) => trigger (Wrap e (f t)) in
+    let h := bimap handle_WE (id_ F) in
+    interp h it.
 
-Variant nondet_schedulerE (S : Type) : Type -> Type :=
-| NondetFin : nat -> nondet_schedulerE S nat
-| Spawn : S -> nondet_schedulerE S unit.
-Arguments NondetFin {S}.
+Variant nondetFinE : Type -> Type :=
+| NondetFin (n : nat) : nondetFinE (Fin.t n).
+
+Fixpoint list_nth {A} (l : list A) (f : Fin.t (List.length l)) : A :=
+  match l return Fin.t (length l) -> A with
+  | [] => Fin.case0 _ (* unreachable *)
+  | h::tl => fun f =>
+    match f in Fin.t (S n) return length tl = n -> A with
+    | F1 => fun _ => h
+    | FS fs => fun pf => list_nth tl (eq_rect_r Fin.t fs pf)
+    end eq_refl
+  end f.
+
+Definition choose {E} `{nondetFinE -< E}
+           {X} : ktree E (list X) X :=
+  fun l =>
+    n <- trigger (NondetFin (List.length l))
+    ;; ret (list_nth l n).
+
+Variant schedulerE (S : Type) : Type -> Type :=
+| Spawn : S -> schedulerE S unit.
 Arguments Spawn {S}.
 
-CoFixpoint nondet_scheduler {E S IR R}
-           (spawn : ktree (nondet_schedulerE S +' E) S IR)
+CoFixpoint scheduler {E S IR R}
+           (spawn : ktree (schedulerE S +' E) S IR)
            (fold_results : R -> IR -> R)
            (acc_result : R)
-           (its : list (itree (nondet_schedulerE S +' E) IR))
-  : itree (nondet_schedulerE S +' E) R :=
+           (its : list (itree (schedulerE S +' E) IR))
+  : itree (nondetFinE +' E) R :=
   match its with
   | [] => Ret acc_result
   | _ =>
     n <- trigger (NondetFin (List.length its))
-    ;; match List.nth_error its n with
-       | Some it =>
-         match observe it with
-         | RetF r =>
-           let acc_result := fold_results acc_result r in
-           Tau (nondet_scheduler spawn fold_results acc_result (list_remove_nth n its))
-         | TauF it =>
-           Tau (nondet_scheduler spawn fold_results acc_result (list_replace_nth n it its))
-         | @VisF _ _ _ X o k =>
-           match o with
-           | inl1 o' =>
-             match o' in nondet_schedulerE _ Y
-                   return X = Y -> itree (nondet_schedulerE S +' E) R with
-             | Spawn s =>
-               fun pf =>
-                 let it := k (eq_rect_r (fun T => T) tt pf) in
-                 Tau (nondet_scheduler spawn fold_results acc_result(spawn s::list_replace_nth n it its))
-             | _ => fun _ =>
-                     Vis o (fun x => nondet_scheduler spawn fold_results acc_result (list_replace_nth n (k x) its))
-             end eq_refl
-           | inr1 _ =>
-             Vis o (fun x => nondet_scheduler spawn fold_results acc_result (list_replace_nth n (k x) its))
-           end
+    ;; let it := list_nth its n in
+       match observe it with
+       | RetF r =>
+         let acc_result := fold_results acc_result r in
+         Tau (scheduler spawn fold_results acc_result (list_remove_nth (proj1_sig (Fin.to_nat n)) its))
+       | TauF it =>
+         Tau (scheduler spawn fold_results acc_result (list_replace_nth (proj1_sig (Fin.to_nat n)) it its))
+       | @VisF _ _ _ X o k =>
+         match o with
+         | inl1 o' =>
+           match o' in schedulerE _ Y
+                 return X = Y -> itree (nondetFinE +' E) R with
+           | Spawn s =>
+             fun pf =>
+               let it := k (eq_rect_r (fun T => T) tt pf) in
+               Tau (scheduler spawn fold_results acc_result (spawn s::list_replace_nth (proj1_sig (Fin.to_nat n)) it its))
+           end eq_refl
+         | inr1 o' =>
+           Vis (inr1 o') (fun x => scheduler spawn fold_results acc_result (list_replace_nth (proj1_sig (Fin.to_nat n)) (k x) its))
          end
-       | None => ITree.spin (* catch fire *)
        end
   end.

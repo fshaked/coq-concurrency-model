@@ -34,9 +34,25 @@ Local Open Scope itree_scope.
    This bounds the instance search depth: *)
 Typeclasses eauto := 5.
 
-Variant result : Type :=
-| Accept
-| Reject.
+(* [throw Disabled] indicates a disabled transition, backtrack and try a
+   different non-det choice. It is intended that [Disabled] can only happen
+   immediately after a non-det choice; and whenever there is a non-det option,
+   at least one of the choices is not [Disabled]. Hence non-det options can
+   easily be pruned to not include [Disabled] deadlocks. *)
+Variant disabled : Type := Disabled : disabled.
+
+(* [error] are errors that are due to violations of our assumptions, probably a
+   user error. Those are mostly things that are not modelled yet. *)
+Variant error : Type :=
+| InsNotInStorage : error
+| InsDecodeFail : error
+| ReadFromUnmappedMem : error.
+
+Variant result A R : Type :=
+| Accept : A -> result A R
+| Reject : R -> result A R.
+Arguments Accept {A R}.
+Arguments Reject {A R}.
 
 Module Type InstructionSemanticsSig.
   Variable reg : Type.
@@ -61,7 +77,7 @@ Module Type InstructionSemanticsSig.
 
   Variant memE : Type -> Type :=
   | MemERead : nat -> memE nat
-  | MemEWrite : nat -> nat -> memE unit.
+  | MemEWrite (loc : nat) (val : nat) : memE unit.
 
   Definition E := (regE +' memE).
 
@@ -79,9 +95,9 @@ Module Type ArcSig.
 
   Definition mem_loc := nat.
   Record mem_slc : Type :=
-    mk_mem_slc { addr : mem_loc;
-                 size: nat (* in bytes *) }.
-  Definition mem_slc_val := nat.
+    mk_mem_slc { location : mem_loc;
+                 size : nat (* in bytes *) }.
+  Definition mem_slc_val : Type := nat.
 
   Variable instruction_kind : Type.
   Variable instruction_kind_from_ast : InsSem.ast -> instruction_kind.
