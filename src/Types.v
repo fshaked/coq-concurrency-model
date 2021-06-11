@@ -3,7 +3,7 @@ From Coq Require Import
      NArith.NArith
      Lists.List
      Lists.ListSet
-     (* Strings.String *)
+     Strings.String
      Morphisms
      Setoid
      RelationClasses .
@@ -17,7 +17,7 @@ From Coq Require Import
 From ITree Require Import
      ITree
      ITreeFacts
-     Events.MapDefault
+     Events.Exception
      Events.StateFacts.
 
 Import ITreeNotations.
@@ -41,12 +41,16 @@ Typeclasses eauto := 5.
    easily be pruned to not include [Disabled] deadlocks. *)
 Variant disabled : Type := Disabled : disabled.
 
-(* [error] are errors that are due to violations of our assumptions, probably a
-   user error. Those are mostly things that are not modelled yet. *)
-Variant error : Type :=
-| InsNotInStorage : error
-| InsDecodeFail : error
-| ReadFromUnmappedMem : error.
+(* Indicates a bug in the model *)
+Variant error : Type := Error : string -> error.
+
+Definition try_unwrap_option {E} `{exceptE error -< E}
+           {T} (x : option T) (msg : string)
+  : itree E T :=
+  match x with
+  | Some x => ret x
+  | None => throw (Error msg)
+  end.
 
 Variant result A R : Type :=
 | Accept : A -> result A R
@@ -77,7 +81,8 @@ Module Type InstructionSemanticsSig.
 
   Variant memE : Type -> Type :=
   | MemERead : nat -> memE nat
-  | MemEWrite (loc : nat) (val : nat) : memE unit.
+  | MemEWriteFP (loc : nat) : memE unit
+  | MemEWriteVal (val : nat) : memE unit.
 
   Definition E := (regE +' memE).
 

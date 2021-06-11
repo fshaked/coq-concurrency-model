@@ -110,52 +110,41 @@ Module System (Arc : ArcSig).
   (*     | None => ITree.spin (* Unreachable *) *)
   (*     end. *)
 
+  Definition get_thread_state {E} `{exceptE error -< E}
+             (tid : thread_id_t) (s : state)
+    : itree E ThrState.state :=
+    match List.nth_error s.(threads) tid with
+    | Some thr_state => ret thr_state
+    | None => throw (Error "thread is missing")
+    end.
+
   Definition handle_threadE {E}
+             `{wrapE ThrState.storageE thread_id_t -< E}
              `{exceptE disabled -< E}
-             `{exceptE system_deadlock -< E}
+             `{exceptE error -< E}
     : wrapE ThrDenote.threadE (Thread.instruction_id_t * thread_id_t) ~>
             stateT state (itree E) :=
     fun _ e s =>
       let '(Wrap e (iid, tid)) := e in
-      match List.nth_error s.(threads) tid with
-      | Some thr_state =>
-        match e with
-        | ThEInsFetch loc =>
-          match StoState.read_instruction loc s.(storage) with
-          | Some (size, code) =>
-            (* TODO: pass `size` to the thread so it knows how to increment the PC. *)
-            '(thr_state, answer) <- ThrState.handle_ThEInsFetch size code iid thr_state
-            ;; let ts := list_replace_nth tid thr_state s.(threads) in
-               Ret (s <| threads := ts |>, answer)
+      thr_state <- get_thread_state tid s
+      ;; let it := ThrState.handle_threadE e iid thr_state in
+         '(thr_state, answer) <- wrap_event_in_it ThrThread.storageE tid _ it
+      ;; let ts := list_replace_nth tid thr_state s.(threads) in
+         ret (s <| threads := ts |>, answer).
 
-            Ret (s, code)
-          | None => throw InsNotInStorage
-          end
-
-        | ThEInsReadFromSto rid =>
-          match ThrState.handle_ThEInsReadFromSto rid iid thr_state with
-          | Some (thr_state, read_request) =>
-            match StoState.read_data read_request s.(storage) with
-            | Some (size, val) =>
-              let ts := list_replace_nth tid (thr_state val) s.(threads) in
-              Ret (s <| threads := ts |>, true)
-            | None => throw ReadFromUnmappedMem
-            end
-          | None => throw Disabled
-          end
-
-        | _ =>
-          '(thr_state, answer) <- ThrState.handle_threadE e iid thr_state
-          ;; let ts := list_replace_nth tid thr_state s.(threads) in
-             Ret (s <| threads := ts |>, answer)
-        end
-      | None => ITree.spin (* Unreachable *)
-      end.
+  Definition handle_storageE {E}
+             `{exceptE disabled -< E}
+             `{exceptE error -< E}
+    : wrapE ThrState.storageE thread_id_t ~>
+            stateT state (itree E) :=
+    fun _ e s =>
+      let '(Wrap e tid) := e in
 
   Definition interp_system {E}
     : itree (wrapE ThrDenote.threadE (Thread.instruction_id_t * thread_id_t) +' E) ~>
             stateT state (itree E) :=
-    interp_state (case_ handle_threadE pure_state).
+    let h := cat handle_threadE handle_storageE in
+        interp_state (case_ h pure_state).
 
   Definition run_system (mem : nat -> option nat) (entry_locs : list nat) :=
     interp_system (denote entry_locs) (initial_state mem entry_locs).

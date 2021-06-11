@@ -109,38 +109,51 @@ Definition choose {E} `{nondetFinE -< E}
     ;; ret (list_nth l n).
 
 Variant schedulerE (S : Type) : Type -> Type :=
-| Spawn : S -> schedulerE S unit.
+| Spawn : S -> schedulerE S unit
+| Kill : S -> schedulerE S unit.
 Arguments Spawn {S}.
+Arguments Kill {S}.
 
 CoFixpoint scheduler {E S IR R}
+           (eq_dec_S : forall (x y : S), {x = y}+{x <> y})
            (spawn : ktree (schedulerE S +' E) S IR)
            (fold_results : R -> IR -> R)
            (acc_result : R)
-           (its : list (itree (schedulerE S +' E) IR))
+           (its : list (S * itree (schedulerE S +' E) IR))
   : itree (nondetFinE +' E) R :=
   match its with
   | [] => Ret acc_result
   | _ =>
     n <- trigger (NondetFin (List.length its))
-    ;; let it := list_nth its n in
+    ;; let '(id, it) := list_nth its n in
        match observe it with
        | RetF r =>
          let acc_result := fold_results acc_result r in
-         Tau (scheduler spawn fold_results acc_result (list_remove_nth (proj1_sig (Fin.to_nat n)) its))
+         Tau (scheduler eq_dec_S spawn fold_results acc_result
+                        (list_remove_nth (proj1_sig (Fin.to_nat n)) its))
        | TauF it =>
-         Tau (scheduler spawn fold_results acc_result (list_replace_nth (proj1_sig (Fin.to_nat n)) it its))
+         Tau (scheduler eq_dec_S spawn fold_results acc_result
+                        (list_replace_nth (proj1_sig (Fin.to_nat n)) (id, it) its))
        | @VisF _ _ _ X o k =>
          match o with
          | inl1 o' =>
            match o' in schedulerE _ Y
                  return X = Y -> itree (nondetFinE +' E) R with
-           | Spawn s =>
+           | Spawn id' =>
              fun pf =>
                let it := k (eq_rect_r (fun T => T) tt pf) in
-               Tau (scheduler spawn fold_results acc_result (spawn s::list_replace_nth (proj1_sig (Fin.to_nat n)) it its))
+               Tau (scheduler eq_dec_S spawn fold_results acc_result
+                              ((id', spawn id')::list_replace_nth (proj1_sig (Fin.to_nat n)) (id, it) its))
+           | Kill id' =>
+             fun pf =>
+               let it := k (eq_rect_r (fun T => T) tt pf) in
+               let its := list_replace_nth (proj1_sig (Fin.to_nat n)) (id, it) its in
+               let its := List.filter (fun '(id'', _) => if eq_dec_S id'' id' then false else true) its in
+               Tau (scheduler eq_dec_S spawn fold_results acc_result its)
            end eq_refl
          | inr1 o' =>
-           Vis (inr1 o') (fun x => scheduler spawn fold_results acc_result (list_replace_nth (proj1_sig (Fin.to_nat n)) (k x) its))
+           Vis (inr1 o') (fun x => scheduler eq_dec_S spawn fold_results acc_result
+                                          (list_replace_nth (proj1_sig (Fin.to_nat n)) (id, (k x)) its))
          end
        end
   end.
