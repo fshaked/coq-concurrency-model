@@ -1,4 +1,5 @@
 COQTHEORIES  := $(shell find . -iname '*.v')
+COQMODULE    := ConcModel
 
 all: proof
 
@@ -9,7 +10,8 @@ proof: coq.mk
 	$(MAKE) -f coq.mk $(COQTHEORIES:.v=.vo)
 
 _CoqProject: $(COQTHEORIES)
-	{ echo '-R src/ ConcModel'; \
+	{ echo '-R src/ $(COQMODULE)'; \
+	  echo '-R lib/ $(COQMODULE)'; \
 	  echo '-arg -w'; \
 	  echo '-arg all'; \
 	  echo $(COQTHEORIES); \

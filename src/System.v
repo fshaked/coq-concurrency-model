@@ -49,7 +49,6 @@ Local Open Scope monad_scope.
 
 Module System (Arc : ArcSig).
   Module ThrDenote := Thread.Denote Arc.
-  Definition thread_id_t := Utils.id_t.
 
   Definition thread_it {E}
              `{wrapE ThrDenote.threadE (Thread.instruction_id_t * thread_id_t) -< E}
