@@ -215,34 +215,19 @@ Module Make (Arc : ArcSig).
                             to this reg-write. *)
                          rws_mem_data_flow : bool }.
 
-  Record mem_read : Type :=
-    mk_mem_read { read_id : mem_read_id_t;
-                  read_footprint : mem_slc;
-                  read_kind : Arc.InsSem.mem_read_kind }.
-
-  (* [mem_read_value] is actually a pointer to all the sources that compose the
-     value *)
-  Definition mem_read_value : Type := list (thread_id_t * instruction_id_t * mem_write_id_t *
-                                            mem_slc * mem_slc_val).
 
   Record mem_reads_state :=
     mk_mem_reads_state { rs_footprint : mem_slc;
-                         rs_reads : list mem_read;
+                         rs_reads : list Arc.mem_read;
                          rs_unsat_slcs : list (list mem_slc);
-                         rs_reads_from : list mem_read_value }.
+                         rs_reads_from : list Arc.mem_reads_from }.
 
   Instance eta_mem_reads_state : Settable _ :=
     settable! mk_mem_reads_state <rs_footprint; rs_reads; rs_unsat_slcs; rs_reads_from>.
 
-  Record mem_write : Type :=
-    mk_mem_write { write_id : mem_write_id_t;
-                   write_footprint : mem_slc;
-                   write_val : mem_slc_val;
-                   write_kind : Arc.InsSem.mem_read_kind }.
-
   Record mem_writes_state :=
     mk_mem_writes_state { ws_footprint : mem_slc;
-                          ws_writes : list mem_write;
+                          ws_writes : list Arc.mem_write;
                           ws_has_propagated : list bool }.
 
   Instance eta_mem_writes_state : Settable _ :=
@@ -294,9 +279,9 @@ Module Make (Arc : ArcSig).
        instruction_tree := Tree (iid, loc, None) [] |}.
 
   Variant storageE : Type -> Type :=
-  | StEReadInstruction : Arc.InsSem.pc_t -> storageE (mem_slc * mem_read_value)
-  | StERead : mem_read -> (list mem_slc) -> storageE mem_read_value
-  | StEWrite : mem_write -> storageE unit.
+  | StEReadInstruction : Arc.InsSem.pc_t -> storageE (mem_slc * Arc.mem_reads_from)
+  | StERead : Arc.mem_read -> (list mem_slc) -> storageE Arc.mem_reads_from
+  | StEWrite : Arc.mem_write -> storageE unit.
 
   Definition get_instruction_state {E} `{exceptE error -< E}
              (iid : instruction_id_t) (s : state)
@@ -412,13 +397,13 @@ Module Make (Arc : ArcSig).
        let kind := Arc.mem_read_kind_of_ins_kind ins.(ins_kind) in
        let rids := List.seq 0 (List.length sub_slcs) in
        let reads := List.map
-                      (fun '(rid, slc) => {| read_id := rid;
-                                          read_footprint := slc;
-                                          read_kind := kind |})
+                      (fun '(rid, slc) => {| Arc.read_id := rid;
+                                          Arc.read_footprint := slc;
+                                          Arc.read_kind := kind |})
                       (List.combine rids sub_slcs) in
        let rs := {| rs_footprint := slc;
                     rs_reads := reads;
-                    rs_unsat_slcs := List.map (fun r => [r.(read_footprint)]) reads;
+                    rs_unsat_slcs := List.map (fun r => [r.(Arc.read_footprint)]) reads;
                     rs_reads_from := List.map (fun _ => nil) reads |} in
        let ins := ins <| ins_mem_reads := Some rs |> in
        let s := update_dec_instruction_state iid ins s in
@@ -493,10 +478,10 @@ Module Make (Arc : ArcSig).
        let kind := Arc.mem_write_kind_of_ins_kind ins.(ins_kind) in
        let wids := List.seq 0 (List.length sub_slcs) in
        let writes := List.map
-                      (fun '(wid, (slc, val)) => {| write_id := wid;
-                                                 write_footprint := slc;
-                                                 write_val := val;
-                                                 write_kind := kind |})
+                      (fun '(wid, (slc, val)) => {| Arc.write_id := wid;
+                                                 Arc.write_footprint := slc;
+                                                 Arc.write_val := val;
+                                                 Arc.write_kind := kind |})
                       (List.combine wids sub_slcs) in
        let ws := ws <| ws_writes := writes |>
                     <| ws_has_propagated := List.map (fun _ => false) writes |>in
@@ -511,7 +496,7 @@ Module Make (Arc : ArcSig).
     ;; ws <- try_unwrap_option ins.(ins_mem_writes)
                                     "try_commit_store_instruction: no mem writes"
     (* FIXME: check commit-store condition *)
-    ;; let wids := List.map write_id ws.(ws_writes) in
+    ;; let wids := List.map Arc.write_id ws.(ws_writes) in
     ret (s, wids).
 
   Definition try_propagate_store_op {E}

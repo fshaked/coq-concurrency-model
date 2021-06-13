@@ -22,46 +22,41 @@ Import Monads.
 Import MonadNotation.
 Import ListNotations.
 
-Require Import Utils.
-Require Import Types.
-Require Import Thread.
+Require Import Utils Types.
+(* Require Import Thread. *)
 
 Local Open Scope list.
 Local Open Scope itree_scope.
 Local Open Scope monad_scope.
 (* Local Open Scope monad_scope. *)
 
-Module State (Arc : ArcSig).
+Module Make (Arc : ArcSig).
   (* `mem` is a map from byte locations to byte values *)
-  Record state := mk_state { mem : Arc.mem_loc -> option Arc.mem_slc_val }.
+  Record state := mk_state { mem : list (thread_id_t * instruction_id_t * Arc.mem_write) }.
   Instance eta_state : Settable _ := settable! mk_state <mem>.
 
-  Definition initial_state (mem : Arc.mem_loc -> option Arc.mem_slc_val) : state :=
+  Definition initial_state (mem : list (thread_id_t * instruction_id_t * Arc.mem_write))
+    : state :=
     {| mem := mem |}.
 
-  (* Head of `svs` is most significant *)
-  Definition combine_values (svs : list (nat * option Arc.mem_slc_val))
-    : option (nat * Arc.mem_slc_val) :=
-    List.fold_left
-        (fun acc sv =>
-           match acc, sv with
-           | Some (acc_size, acc_val), (size, Some val) =>
-             Some (acc_size + size, acc_val * (2 ^ (8 * size)) + val)
-           | _, _ => None
-           end)
-        svs
-        (Some (0, 0)).
 
-  Definition get_slc (slc : Arc.mem_slc) (s : state) : option (nat * Arc.mem_slc_val) :=
-    let bytes := List.map (fun o => (1, s.(mem) (slc.(Arc.location) + o)))
-                          (List.seq 0 slc.(Arc.size)) in
-    combine_values
-      (* TODO: the `rev` is because we assume little-endianness *)
-      (List.rev bytes).
+  Definition get_slc_val (slc : mem_slc) (s : state) : option mem_slc_val :=
+    flatten_mem_slc_vals slc (List.map (fun '(_, _, w) =>
+                                          (w.(Arc.write_footprint), w.(Arc.write_val)))
+                                       s.(mem)).
 
-  Definition read_instruction (loc : Arc.mem_loc) (s : state) : option (nat * Arc.mem_slc_val) :=
-    (* TODO: we assume all instructions are 4 bytes *)
+  Definition read_instruction (loc : mem_loc) (s : state) : option mem_slc_val :=
+    (* TODO: don't assume all instructions are 4 bytes *)
     let ins_size := 4 in
-    get_slc ({| Arc.location := loc; Arc.size := ins_size |}) s.
+    get_slc_val {| location := loc; size := ins_size |} s.
 
-End State.
+  Definition read
+             (slc : mem_slc) (s : state) : option mem_slc_val :=
+    get_slc_val slc s.
+
+  Definition write (w : mem_write) (tid : thread_id_t) (iid : instruction_id_t) (s : state) : state :=
+             (slc : mem_slc) (val : mem_slc_val) (tid : thread_id_t)
+             (iid : instruction_id_t) (wid : mem_write_id_t) (s : state) : state :=
+    s <| mem :=
+
+End Make.

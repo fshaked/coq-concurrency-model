@@ -36,10 +36,7 @@ Import MonadNotation.
 Import ListNotations.
 Import RecordSetNotations.
 
-Require Import Utils.
-Require Import Types.
-Require Import Thread.
-Require Import Storage.
+Require Import Utils Types Thread Storage.
 
 Local Open Scope list.
 Local Open Scope itree_scope.
@@ -47,7 +44,7 @@ Local Open Scope monad_scope.
 
 (* Local Open Scope monad_scope. *)
 
-Module System (Arc : ArcSig).
+Module Make (Arc : ArcSig).
   Module ThrDenote := Thread.Denote Arc.
 
   Definition thread_it {E}
@@ -147,3 +144,4 @@ Module System (Arc : ArcSig).
 
   Definition run_system (mem : nat -> option nat) (entry_locs : list nat) :=
     interp_system (denote entry_locs) (initial_state mem entry_locs).
+End Make.

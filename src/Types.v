@@ -81,6 +81,91 @@ Record mem_slc : Type :=
 (* [mem_slc_val] is a list of byte values, head is least significant. *)
 Definition mem_slc_val : Type := list nat.
 
+Definition reads_from_slc (slc : mem_slc) (val : mem_slc_val) (uslc : mem_slc)
+  : option (mem_slc * mem_slc_val * list mem_slc) :=
+  if decide (slc.(location) < uslc.(location) + uslc.(size) /\
+             uslc.(location) < slc.(location) + slc.(size)) then
+    let val_start := max slc.(location) uslc.(location) in
+    let val_end := min (slc.(location) + slc.(size)) (uslc.(location) + uslc.(size)) in
+
+    let slc' := {| location := val_start;
+                   size := val_end - val_start |} in
+    let val' := List.firstn slc'.(size) (List.skipn (slc'.(location) - slc.(location)) val) in
+
+    let uslcs' :=
+        if decide (uslc.(location) < slc'.(location)) then
+          {| location := uslc.(location);
+             size := slc'.(location) - uslc.(location) |}::nil
+        else nil in
+    let uslcs' :=
+        if decide (val_end < uslc.(location) + uslc.(size)) then
+          {| location := val_end;
+             size := uslc.(location) + uslc.(size) - val_end |}::uslcs'
+        else uslcs' in
+
+    Some (slc', val', uslcs')
+  else
+    None.
+
+Fixpoint reads_from {T} (eqb_T : T -> T -> bool)
+         (vals : list (T * (mem_slc * mem_slc_val)))
+         (uslcs : list mem_slc)
+         (rf : list (T * (mem_slc * mem_slc_val)))
+  : list mem_slc * list (T * (mem_slc * mem_slc_val)) :=
+  match vals with
+  | (id, (slc, val))::vals =>
+    let '(rf', uslcs') :=
+        List.split
+          (List.map (fun uslc =>
+                       match reads_from_slc slc val uslc with
+                       | Some (slc', val', uslcs') =>
+                         (Some (id, (slc', val')), uslcs')
+                       | None => (None, [uslc])
+                       end) uslcs) in
+    let rf := List.fold_left (fun rf val =>
+                                match val with
+                                | Some val => val::rf
+                                | None => rf
+                                end) rf' rf in
+    let uslcs' := List.concat uslcs' in
+    reads_from eqb_T vals uslcs rf
+  | nil => (uslcs, rf)
+  end.
+
+
+
+
+Definition flatten_mem_slc_vals {T} (slc : mem_slc)
+           (vals : list (T * (mem_slc * mem_slc_val))) (eqb_T : T -> T -> bool)
+  : option mem_slc_val :=
+  let byte_locs := List.seq slc.(location) slc.(size) in
+  let byte_of_val slc val (loc : nat) :=
+      if decide (slc.(location) <= loc < (slc.(location) + slc.(size))) then
+        List.nth_error val (loc - slc.(location))
+      else None in
+  let fix byte_of_vals vals loc :=
+      match vals with
+      | (id' ,(slc', val'))::vals' =>
+        match byte_of_val slc' val' loc with
+        | Some b => Some (id, b)
+        | None => byte_of_vals vals' loc
+        end
+      | [] => None
+      end in
+  let bytes := List.map (byte_of_vals vals) byte_locs in
+  match List.fold_left (fun acc b =>
+                          match acc, b with
+                          | Some (id_acc, v_acc), Some (id, v) => Some (id::id_acc, v::v_acc)
+                          | _, _ => None
+                          end)
+                       bytes
+                       (Some (nil, nil)) with
+  | Some (ids, val) =>
+    let reads_from := List.filter (fun (id, _) => List.existsb (eqb_T id) ids) vals in
+    Some (reads_from, val)
+  | None => None
+  end.
+
 Definition flatten_mem_slc_vals (slc : mem_slc) (vals : list (mem_slc * mem_slc_val))
   : option mem_slc_val :=
   let byte_locs := List.seq slc.(location) slc.(size) in
@@ -171,6 +256,20 @@ Module Type ArcSig.
 
   Variable mem_read_kind_of_ins_kind : instruction_kind -> InsSem.mem_read_kind.
   Variable mem_write_kind_of_ins_kind : instruction_kind -> InsSem.mem_read_kind.
+
+  Record mem_read : Type :=
+    mk_mem_read { read_id : mem_read_id_t;
+                  read_footprint : mem_slc;
+                  read_kind : InsSem.mem_read_kind }.
+
+  Record mem_write : Type :=
+    mk_mem_write { write_id : mem_write_id_t;
+                   write_footprint : mem_slc;
+                   write_val : mem_slc_val;
+                   write_kind : InsSem.mem_read_kind }.
+
+  Definition mem_reads_from : Type := list (thread_id_t * instruction_id_t * mem_write_id_t *
+                                            mem_slc * mem_slc_val).
 End ArcSig.
 
 Module Type ThreadSig.
