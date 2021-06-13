@@ -153,10 +153,10 @@ Module Make (Arc : ArcSig).
       interp h it.
 
   Definition spawn_instruction {E}
-             `{wrapE threadE instruction_id_t -< E} `{nondetFinE -< E}
-    : ktree (schedulerE instruction_id_t +' E)
-            instruction_id_t
-            (Types.result unit unit) :=
+             `{wrapE threadE instruction_id_t -< E}
+             `{nondetFinE -< E}
+             `{schedulerE instruction_id_t -< E}
+    : ktree E instruction_id_t (Types.result unit unit) :=
     fun iid =>
       let it : itree (threadE +' nondetFinE +' schedulerE instruction_id_t)
                      (Types.result unit unit) :=
@@ -236,7 +236,7 @@ Module Make (Arc : ArcSig).
 
   Record mem_write : Type :=
     mk_mem_write { write_id : mem_write_id_t;
-                   write_fp : mem_slc;
+                   write_footprint : mem_slc;
                    write_val : mem_slc_val;
                    write_kind : Arc.InsSem.mem_read_kind }.
 
@@ -432,15 +432,16 @@ Module Make (Arc : ArcSig).
     ITree.spin.
 
   Definition try_sat_mem_load_op_from_storage {E}
-             `{storageE -< E} `{exceptE error -< E} `{exceptE disabled -< E}
+             `{exceptE error -< E} `{exceptE disabled -< E}
+             `{storageE -< E}
              (rid : mem_read_id_t) (iid : instruction_id_t) (s : state)
     : itree E (state * list instruction_id_t) :=
     '(_, ins, subts) <- get_dec_instruction_state iid s
     ;; rs <- try_unwrap_option ins.(ins_mem_reads)
-                                    "try_sat_mem_load_op_from_storage: no reads."
+                                    "try_sat_mem_load_op_from_storage: no mem reads."
     ;; unsat_slcs <- try_unwrap_option (List.nth_error rs.(rs_unsat_slcs) rid)
                                       "try_sat_mem_load_op_from_storage: missing rid."
-    ;; guard (isTrue (unsat_slcs <> []))
+    (* ;; guard (isTrue (unsat_slcs <> [])) *)
     ;; rr <- try_unwrap_option (List.nth_error rs.(rs_reads) rid)
                               "try_sat_mem_load_op_from_storage: missing rid"
     ;; rf_forward <- try_unwrap_option (List.nth_error rs.(rs_reads_from) rid)
@@ -450,7 +451,7 @@ Module Make (Arc : ArcSig).
                     <| rs_reads_from := list_replace_nth rid (rf_forward ++ rf_storage) rs.(rs_reads_from) |> in
        let ins := ins <| ins_mem_reads := Some rs |> in
        (* FIXME: compute iids that need to be restarted *)
-       let restarts : list instruction_id_t := [] in
+       let restarts := [] in
        (* FIXME: let subts := restart_instructions restarts subts in *)
        let s := update_dec_instruction_state_and_subts iid ins subts s in
        ret (s, restarts).
@@ -460,8 +461,8 @@ Module Make (Arc : ArcSig).
     : itree E (state * mem_slc_val) :=
     '(_, ins, _) <- get_dec_instruction_state iid s
     ;; rs <- try_unwrap_option ins.(ins_mem_reads)
-                                    "try_complete_load_ops: no reads."
-    ;; guard (isTrue (Forall (fun u => u = []) rs.(rs_unsat_slcs)))
+                                    "try_complete_load_ops: no mem reads."
+    (* ;; guard (isTrue (Forall (fun u => u = []) rs.(rs_unsat_slcs))) *)
     ;; val <- try_unwrap_option
                (flatten_mem_slc_vals
                   rs.(rs_footprint)
@@ -470,6 +471,75 @@ Module Make (Arc : ArcSig).
                                        rs.(rs_reads_from))))
                "try_complete_load_ops: some bytes are missing from memory read."
     ;; ret (s, val).
+
+  Definition try_init_mem_store_op_fps {E} `{exceptE error -< E} `{exceptE disabled -< E}
+             (slc : mem_slc) (iid : instruction_id_t) (s : state)
+    : itree E (state * unit) :=
+    '(_, ins, _) <- get_dec_instruction_state iid s
+    ;; let ws := {| ws_footprint := slc;
+                    ws_writes := [];
+                    ws_has_propagated := [] |} in
+       let ins := ins <| ins_mem_writes := Some ws |> in
+       let s := update_dec_instruction_state iid ins s in
+       ret (s, tt).
+
+  Definition try_insta_mem_store_op_vals {E} `{exceptE error -< E} `{exceptE disabled -< E}
+             (val : mem_slc_val) (iid : instruction_id_t) (s : state)
+    : itree E (state * unit) :=
+    '(_, ins, _) <- get_dec_instruction_state iid s
+    ;; ws <- try_unwrap_option ins.(ins_mem_writes)
+                                    "try_insta_mem_store_op_vals: no mem writes"
+    ;; let sub_slcs := Arc.split_store_mem_slc_val ins.(ins_kind) ws.(ws_footprint) val in
+       let kind := Arc.mem_write_kind_of_ins_kind ins.(ins_kind) in
+       let wids := List.seq 0 (List.length sub_slcs) in
+       let writes := List.map
+                      (fun '(wid, (slc, val)) => {| write_id := wid;
+                                                 write_footprint := slc;
+                                                 write_val := val;
+                                                 write_kind := kind |})
+                      (List.combine wids sub_slcs) in
+       let ws := ws <| ws_writes := writes |>
+                    <| ws_has_propagated := List.map (fun _ => false) writes |>in
+       let ins := ins <| ins_mem_writes := Some ws |> in
+       let s := update_dec_instruction_state iid ins s in
+       ret (s, tt).
+
+  Definition try_commit_store_instruction {E} `{exceptE error -< E} `{exceptE disabled -< E}
+             (iid : instruction_id_t) (s : state)
+    : itree E (state * list mem_write_id_t) :=
+    '(_, ins, _) <- get_dec_instruction_state iid s
+    ;; ws <- try_unwrap_option ins.(ins_mem_writes)
+                                    "try_commit_store_instruction: no mem writes"
+    (* FIXME: check commit-store condition *)
+    ;; let wids := List.map write_id ws.(ws_writes) in
+    ret (s, wids).
+
+  Definition try_propagate_store_op {E}
+             `{exceptE error -< E} `{exceptE disabled -< E}
+             `{storageE -< E}
+             (wid : mem_write_id_t) (iid : instruction_id_t) (s : state)
+    : itree E (state * list instruction_id_t) :=
+    '(_, ins, subts) <- get_dec_instruction_state iid s
+    ;; ws <- try_unwrap_option ins.(ins_mem_writes)
+                                    "try_propagate_store_op: no mem writes"
+    (* ;; guard (isTrue (List.nth_error ws.(ws_has_propagated) wid = Some false)) *)
+    ;; w <- try_unwrap_option (List.nth_error ws.(ws_writes) wid)
+                              "try_propagate_store_op: missing wid"
+    (* FIXME: check mem-write-propagation condition *)
+    ;; 'tt <- trigger (StEWrite w)
+    ;; let ws := ws <| ws_has_propagated := list_replace_nth wid true ws.(ws_has_propagated) |> in
+       let ins := ins <| ins_mem_writes := Some ws |> in
+       (* FIXME: compute iids that need to be restarted *)
+       let restarts := [] in
+       (* FIXME: let subts := restart_instructions restarts subts in *)
+       let s := update_dec_instruction_state_and_subts iid ins subts s in
+       ret (s, restarts).
+
+  Definition try_complete_store_ops {E} `{exceptE error -< E} `{exceptE disabled -< E}
+             (iid : instruction_id_t) (s : state)
+    : itree E (state * unit) :=
+    (* FIXME: is there anything we need to check here? *)
+    ret (s, tt).
 
   Definition handle_threadE {E} `{storageE -< E} `{exceptE error -< E} `{exceptE disabled -< E}
     : wrapE threadE instruction_id_t ~>
@@ -486,10 +556,10 @@ Module Make (Arc : ArcSig).
       | ThESatMemLoadOpStorage rid => try_sat_mem_load_op_from_storage rid iid s
       | ThECompleteLoadOps => try_complete_load_ops iid s
       (* Store events *)
-      | ThEInitMemStoreOpFps slc => ITree.spin (* : mem_slc -> threadE unit *)
-      | ThEInstaMemStoreOpVals val => ITree.spin (* mem_slc_val -> threadE unit *)
-      | ThECommitStoreInstruction => ITree.spin (* threadE (list mem_write_id_t) *)
-      | ThEPropagateStoreOp wid => ITree.spin (* mem_write_id_t -> threadE unit *)
-      | ThECompleteStoreOps => ITree.spin (* threadE unit *)
+      | ThEInitMemStoreOpFps slc => try_init_mem_store_op_fps slc iid s
+      | ThEInstaMemStoreOpVals val => try_insta_mem_store_op_vals val iid s
+      | ThECommitStoreInstruction => try_commit_store_instruction iid s
+      | ThEPropagateStoreOp wid => try_propagate_store_op wid iid s
+      | ThECompleteStoreOps => try_complete_store_ops iid s
       end.
 End Make.
