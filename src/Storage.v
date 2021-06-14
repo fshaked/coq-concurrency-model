@@ -51,14 +51,14 @@ Module Make (Arc : ArcSig).
     : state :=
     {| mem := mem |}.
 
-  Definition get_slc_val (slc : mem_slc) (s : state) : option Arc.mem_reads_from :=
+  Definition get_slcs_val (slcs : list mem_slc) (s : state) : option Arc.mem_reads_from :=
     let '(uslcs, rf) :=
         reads_from (fun '(tid, iid, wid) '(tid', iid', wid') =>
                       (Nat.eqb tid tid' && Nat.eqb iid iid' && Nat.eqb wid wid')%bool)
                    (List.map (fun '(tid, iid, w) =>
                                 ((tid, iid, w.(Arc.write_id)),(w.(Arc.write_footprint), w.(Arc.write_val))))
                              s.(mem))
-                   [slc] [] in
+                   slcs [] in
     match uslcs with
     | nil => Some rf
     | _ => None
@@ -72,17 +72,26 @@ Module Make (Arc : ArcSig).
     (* TODO: don't assume all instructions are 4 bytes *)
     let ins_size := 4 in
     let slc := {| location := loc; size := ins_size |} in
-    rf <- try_unwrap_option (get_slc_val slc s)
+    rf <- try_unwrap_option (get_slcs_val [slc] s)
                            "try_read_instruction: no value in memory"
     ;; ret (s, (slc, rf)).
 
-  Definition read
-             (slc : mem_slc) (s : state) : option Arc.mem_reads_from :=
-    get_slc_val slc s.
+  Definition try_read {E}
+             (* `{exceptE disabled -< E} *)
+             `{exceptE error -< E}
+             (r : Arc.mem_read) (slcs : list mem_slc) (s : state)
+    : itree E (state * Arc.mem_reads_from) :=
+    rf <- try_unwrap_option (get_slcs_val slcs s)
+                           "try_read: no value in memory"
+    ;; ret (s, rf).
 
-  Definition write (w : Arc.mem_write) (tid : thread_id_t)
-             (iid : instruction_id_t) (s : state) : state :=
-    s <| mem := (tid, iid, w)::s.(mem) |>.
+  Definition try_write {E}
+             (* `{exceptE disabled -< E} *)
+             (* `{exceptE error -< E} *)
+             (iid : instruction_id_t) (tid : thread_id_t)
+             (w : Arc.mem_write) (s : state)
+    : itree E (state * unit) :=
+    Ret (s <| mem := (tid, iid, w)::s.(mem) |>, tt).
 
   Definition handle_storageE {E}
              `{exceptE disabled -< E}
@@ -92,8 +101,7 @@ Module Make (Arc : ArcSig).
     fun _ e s =>
       match e with
       | Arc.StEReadInstruction pc => try_read_instruction pc s
-      | Arc.StERead read uslcs => Ret (s, [])
-      | Arc.StEWrite write => Ret (s, tt)
+      | Arc.StERead read uslcs => try_read read uslcs s
+      | Arc.StEWrite write => try_write iid tid write s
       end.
-
 End Make.
