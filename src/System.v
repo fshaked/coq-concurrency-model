@@ -23,22 +23,23 @@ Typeclasses eauto := 5.
 From RecordUpdate Require Import RecordSet.
 Import RecordSetNotations.
 
-Require Import Utils Types Thread Storage.
+Require Import Utils Types.
 
-Module Make (Arc : ArcSig) (Storage : StorageSig with Module Arc := Arc).
-  Module Thread := Thread.Make Arc.
+Module Make (Arc : ArcSig)
+       (Thread : ThreadSig Arc)
+       (Storage : StorageSig Arc).
 
   Definition thread_it {E}
-             `{wrapE Thread.threadE (instruction_id_t * thread_id_t) -< E}
+             `{wrapE Thread.E (instruction_id_t * thread_id_t) -< E}
              `{nondetFinE -< E}
              (tid : thread_id_t)
     : itree E (Types.result unit unit) :=
     let it := Thread.denote 0 in
-    let it := map_wrap_event_in_it Thread.threadE (fun iid => (iid, tid)) _ it in
+    let it := map_wrap_event_in_it Thread.E (fun iid => (iid, tid)) _ it in
     resum_it _ it.
 
   Definition denote {E}
-             `{wrapE Thread.threadE (instruction_id_t * thread_id_t) -< E}
+             `{wrapE Thread.E (instruction_id_t * thread_id_t) -< E}
              `{nondetFinE -< E}
              (tids : list thread_id_t)
     : itree E unit :=
@@ -66,7 +67,7 @@ Module Make (Arc : ArcSig) (Storage : StorageSig with Module Arc := Arc).
              (entry_locs : list mem_loc)
     : state :=
     {| storage := Storage.initial_state mem;
-       threads := List.map (Thread.initial_state 0)  entry_locs |}.
+       threads := List.map (Thread.initial_state 0) entry_locs |}.
 
   Definition interp_storage {E}
              `{exceptE disabled -< E}
@@ -75,16 +76,16 @@ Module Make (Arc : ArcSig) (Storage : StorageSig with Module Arc := Arc).
     : itree (Arc.storageE +' E) ~> stateT Storage.state (itree E) :=
     interp_state (case_ (Storage.handle_storageE iid tid) pure_state).
 
-  Definition handle_threadE {E}
+  Definition handle_thread_E {E}
              `{exceptE disabled -< E}
              `{exceptE error -< E}
-    : wrapE Thread.threadE (instruction_id_t * thread_id_t) ~>
+    : wrapE Thread.E (instruction_id_t * thread_id_t) ~>
             stateT state (itree E) :=
     fun _ e s =>
       let '(Wrap e (iid, tid)) := e in
       thr_state <- try_unwrap_option (List.nth_error s.(threads) tid)
                                     "get_thread_state: thread is missing"
-      ;; let it : itree _ (Thread.state * _) := Thread.handle_threadE iid _ e thr_state in
+      ;; let it : itree _ (Thread.state * _) := Thread.handle_E iid _ e thr_state in
          '(sto_state, (thr_state, ans)) <- interp_storage iid tid _ it s.(storage)
       ;; let ts := list_replace_nth tid thr_state s.(threads) in
          ret (s <| storage := sto_state |> <| threads := ts |>, ans).
@@ -92,9 +93,9 @@ Module Make (Arc : ArcSig) (Storage : StorageSig with Module Arc := Arc).
   Definition interp_system {E}
              `{exceptE disabled -< E}
              `{exceptE error -< E}
-    : itree (wrapE Thread.threadE (instruction_id_t * thread_id_t) +' E) ~>
+    : itree (wrapE Thread.E (instruction_id_t * thread_id_t) +' E) ~>
             stateT state (itree E) :=
-    interp_state (case_ handle_threadE pure_state).
+    interp_state (case_ handle_thread_E pure_state).
 
   Definition run_system
              (mem : list (thread_id_t * instruction_id_t * Arc.mem_write))
