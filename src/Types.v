@@ -2,32 +2,18 @@ From Coq Require Import
      Arith.PeanoNat
      NArith.NArith
      Lists.List
-     Lists.ListSet
-     Strings.String
-     Morphisms
-     Setoid
-     RelationClasses.
+     Strings.String.
 
-(* From ExtLib Require Import *)
-(*      Data.String *)
-(*      Structures.Monad *)
-(*      Structures.Traversable *)
-(*      Data.List. *)
+Import ListNotations.
 
 From ITree Require Import
      ITree
      ITreeFacts
      Events.Exception
-     Events.StateFacts.
+     Events.State.
 
-Import ITreeNotations.
 Import Monads.
-Import MonadNotation.
-Import ListNotations.
-
-Local Open Scope list.
-Local Open Scope itree_scope.
-(* Local Open Scope monad_scope. *)
+Import ITreeNotations.
 
 (* The [sum1] types with automatic application of commutativity and
    associativity are prone to infinite instance resolution loops.
@@ -246,3 +232,37 @@ Module Type ArcSig.
   | StERead : mem_read -> (list mem_slc) -> storageE mem_reads_from
   | StEWrite : mem_write -> storageE unit.
 End ArcSig.
+
+Module Type ThreadSig.
+  Declare Module Arc : ArcSig.
+
+  Variable state : Type.
+  Variable initial_state : instruction_id_t -> state.
+
+  Variable E : Type -> Type.
+  Variable denote : forall (F : Type -> Type)
+                      `{HasWrapThreadIID: wrapE E instruction_id_t -< F}
+                      `{HasNondetFin: nondetFinE -< F},
+      ktree F instruction_id_t (result unit unit).
+  Arguments denote {F HasWrapThreadIID HasNondetFin}.
+
+  Variable handle_E : forall (F : Type -> Type)
+                        `{HasExceptDisabled: exceptE disabled -< F}
+                        `{HasExceptError: exceptE error -< F}
+                        `{HasStorage: Arc.storageE -< F},
+      instruction_id_t -> E ~> stateT state (itree F).
+  Arguments handle_E {F HasExceptDisabled HasExceptError HasStorage}.
+End ThreadSig.
+
+Module Type StorageSig.
+  Declare Module Arc : ArcSig.
+
+  Variable state : Type.
+  Variable initial_state : list (thread_id_t * instruction_id_t * Arc.mem_write) -> state.
+  Variable handle_storageE : forall (E : Type -> Type)
+                               `{HasExceptEDisabled: exceptE disabled -< E}
+                               `{HasExceptEError: exceptE error -< E},
+                             instruction_id_t -> thread_id_t ->
+                             Arc.storageE ~> stateT state (itree E).
+  Arguments handle_storageE {E HasExceptEDisabled HasExceptEError}.
+End StorageSig.

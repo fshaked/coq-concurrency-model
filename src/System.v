@@ -1,25 +1,19 @@
 From Coq Require Import
-     Arith.PeanoNat
-     NArith.NArith
+     (* Arith.PeanoNat *)
+     (* NArith.NArith *)
      Lists.List
-     Lists.ListSet
-     Strings.String
-     Morphisms
-     Setoid
-     RelationClasses .
+     Strings.String.
 
-From ExtLib Require Import
-     Structures.Monads
-     Data.Monads.ListMonad.
-(*      Data.String *)
-(*      Structures.Traversable *)
-(*      Data.List. *)
+Import ListNotations.
 
 From ITree Require Import
      ITree
      ITreeFacts
      Events.Exception
      Events.State.
+
+Import Monads.
+Import ITreeNotations.
 
 (* The [sum1] types with automatic application of commutativity and
    associativity are prone to infinite instance resolution loops.
@@ -29,24 +23,10 @@ Typeclasses eauto := 5.
 From RecordUpdate Require Import RecordSet.
 Import RecordSetNotations.
 
-Import ListMonad.
-Import ITreeNotations.
-Import Monads.
-Import MonadNotation.
-Import ListNotations.
-Import RecordSetNotations.
-
 Require Import Utils Types Thread Storage.
 
-Local Open Scope list.
-Local Open Scope itree_scope.
-Local Open Scope monad_scope.
-
-(* Local Open Scope monad_scope. *)
-
-Module Make (Arc : ArcSig).
+Module Make (Arc : ArcSig) (Storage : StorageSig with Module Arc := Arc).
   Module Thread := Thread.Make Arc.
-  Module Storage := Storage.Make Arc.
 
   Definition thread_it {E}
              `{wrapE Thread.threadE (instruction_id_t * thread_id_t) -< E}

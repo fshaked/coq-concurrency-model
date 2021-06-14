@@ -2,30 +2,17 @@ From Coq Require Import
      Arith.PeanoNat
      NArith.NArith
      Lists.List
-     Lists.ListSet
-     Strings.String
-     Morphisms
-     Setoid
-     RelationClasses .
+     Strings.String.
 
 Import ListNotations.
-
-From ExtLib Require Import
-     Structures.Monads
-     Data.Monads.ListMonad.
-(*      Data.String *)
-(*      Structures.Traversable *)
-(*      Data.List. *)
-(* Import ListMonad. *)
 
 From ITree Require Import
      ITree
      ITreeFacts
      Events.Exception
-     Events.Nondeterminism
      Events.State.
+
 Import Monads.
-Import MonadNotation.
 Import ITreeNotations.
 
 (* The [sum1] types with automatic application of commutativity and
@@ -36,15 +23,8 @@ Typeclasses eauto := 5.
 From RecordUpdate Require Import RecordSet.
 Import RecordSetNotations.
 
-Require Import
-        Types
-        Utils
-        Decision.
-
-Local Open Scope list.
-Local Open Scope itree_scope.
-Local Open Scope monad_scope.
-Local Open Scope record_set.
+Require Import Types Utils.
+Require Import  Decision.
 
 Module Make (Arc : ArcSig).
   Variant threadE : Type -> Type :=

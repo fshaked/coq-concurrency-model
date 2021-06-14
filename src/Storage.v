@@ -1,25 +1,17 @@
 From Coq Require Import
-     Arith
-     NArith.NArith
      Lists.List
-     Lists.ListSet
-     Strings.String
-     Morphisms
-     Setoid
-     RelationClasses .
+     Strings.String.
 
-From ExtLib Require Import
-     Structures.Monads
-     Data.Monads.ListMonad.
-(*      Data.String *)
-(*      Structures.Traversable *)
-(*      Data.List. *)
+Import ListNotations.
 
 From ITree Require Import
      ITree
      ITreeFacts
      Events.Exception
      Events.State.
+
+Import Monads.
+Import ITreeNotations.
 
 (* The [sum1] types with automatic application of commutativity and
    associativity are prone to infinite instance resolution loops.
@@ -29,18 +21,8 @@ Typeclasses eauto := 5.
 From RecordUpdate Require Import RecordSet.
 Import RecordSetNotations.
 
-Import ListMonad.
-Import ITreeNotations.
-Import Monads.
-Import MonadNotation.
-Import ListNotations.
-
 Require Import Utils Types.
-
-Local Open Scope list.
-Local Open Scope itree_scope.
-Local Open Scope monad_scope.
-(* Local Open Scope monad_scope. *)
+Require Import Decision.
 
 Module Make (Arc : ArcSig).
   (* `mem` is a map from byte locations to byte values *)
@@ -53,8 +35,7 @@ Module Make (Arc : ArcSig).
 
   Definition get_slcs_val (slcs : list mem_slc) (s : state) : option Arc.mem_reads_from :=
     let '(uslcs, rf) :=
-        reads_from (fun '(tid, iid, wid) '(tid', iid', wid') =>
-                      (Nat.eqb tid tid' && Nat.eqb iid iid' && Nat.eqb wid wid')%bool)
+        reads_from (fun ids ids' => isTrue (ids = ids'))
                    (List.map (fun '(tid, iid, w) =>
                                 ((tid, iid, w.(Arc.write_id)),(w.(Arc.write_footprint), w.(Arc.write_val))))
                              s.(mem))
