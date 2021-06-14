@@ -333,7 +333,8 @@ Module Make (Arc : ArcSig).
                                     "try_fetch_and_decode_or_restart: some bytes are missing from memory read of instruction."
          ;; let ast := Arc.InsSem.decode (nat_of_mem_slc_val val) in
             let ins := initial_decoded_instruction_state ast in
-            let next_pcs := Arc.InsSem.next_pc loc ast in
+            let next_pcs := Arc.InsSem.next_pc (Arc.pc_of_mem_loc loc) ast in
+            let next_pcs := List.map Arc.mem_loc_of_pc next_pcs in
             let iids := List.seq s.(next_iid) (List.length next_pcs) in
             let subts := List.map (fun '(iid, pc) => Tree (iid, pc, None) [])
                                   (List.combine iids next_pcs) in

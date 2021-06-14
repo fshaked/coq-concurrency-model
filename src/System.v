@@ -53,7 +53,6 @@ Module Make (Arc : ArcSig).
              `{nondetFinE -< E}
              (tid : thread_id_t)
     : itree E (Types.result unit unit) :=
-    (* TODO: convert loc from nat to Arc.InsSem.pc_t *)
     let it := Thread.denote 0 in
     let it := map_wrap_event_in_it Thread.threadE (fun iid => (iid, tid)) _ it in
     resum_it _ it.
@@ -119,7 +118,7 @@ Module Make (Arc : ArcSig).
 
   Definition run_system
              (mem : list (thread_id_t * instruction_id_t * Arc.mem_write))
-             (entry_locs : list Arc.InsSem.pc_t) :=
+             (entry_locs : list mem_loc) :=
     let tids := List.seq 0 (List.length entry_locs) in
     interp_system _ (denote tids) (initial_state mem entry_locs).
 End Make.

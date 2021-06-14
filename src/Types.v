@@ -222,6 +222,9 @@ Module Type ArcSig.
   Variable split_store_mem_slc_val : instruction_kind -> mem_slc -> mem_slc_val ->
                                      list (mem_slc * mem_slc_val).
 
+  Definition mem_loc_of_pc (pc : InsSem.pc_t) : mem_loc := pc.
+  Definition pc_of_mem_loc (loc : mem_loc) : InsSem.pc_t := loc.
+
   (** Thread-Storage interface *)
 
   Record mem_read : Type :=
@@ -239,7 +242,7 @@ Module Type ArcSig.
                                             (mem_slc * mem_slc_val)).
 
   Variant storageE : Type -> Type :=
-  | StEReadInstruction : InsSem.pc_t -> storageE (mem_slc * mem_reads_from)
+  | StEReadInstruction : mem_loc -> storageE (mem_slc * mem_reads_from)
   | StERead : mem_read -> (list mem_slc) -> storageE mem_reads_from
   | StEWrite : mem_write -> storageE unit.
 End ArcSig.

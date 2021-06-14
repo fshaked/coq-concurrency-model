@@ -3,7 +3,7 @@ From Coq Require Import
      NArith.NArith
      Lists.List
      Lists.ListSet
-     (* Strings.String *)
+     Strings.String
      Morphisms
      Setoid
      RelationClasses .
@@ -64,10 +64,17 @@ Module Make (Arc : ArcSig).
     | _ => None
     end.
 
-  Definition read_instruction (loc : mem_loc) (s : state) : option Arc.mem_reads_from :=
+  Definition try_read_instruction {E}
+             (* `{exceptE disabled -< E} *)
+             `{exceptE error -< E}
+             (loc : mem_loc) (s : state)
+    : itree E (state * (mem_slc * Arc.mem_reads_from)) :=
     (* TODO: don't assume all instructions are 4 bytes *)
     let ins_size := 4 in
-    get_slc_val {| location := loc; size := ins_size |} s.
+    let slc := {| location := loc; size := ins_size |} in
+    rf <- try_unwrap_option (get_slc_val slc s)
+                           "try_read_instruction: no value in memory"
+    ;; ret (s, (slc, rf)).
 
   Definition read
              (slc : mem_slc) (s : state) : option Arc.mem_reads_from :=
@@ -84,7 +91,7 @@ Module Make (Arc : ArcSig).
     : Arc.storageE ~> stateT state (itree E) :=
     fun _ e s =>
       match e with
-      | Arc.StEReadInstruction pc => Ret (s, ({| location := pc; size := 4 |}, []))
+      | Arc.StEReadInstruction pc => try_read_instruction pc s
       | Arc.StERead read uslcs => Ret (s, [])
       | Arc.StEWrite write => Ret (s, tt)
       end.
