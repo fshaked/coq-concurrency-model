@@ -16,6 +16,7 @@ From ExtLib Require Import
 (*      Data.List. *)
 
 From RecordUpdate Require Import RecordSet.
+Import RecordSetNotations.
 
 Import ListMonad.
 Import Monads.
@@ -40,23 +41,29 @@ Module Make (Arc : ArcSig).
     {| mem := mem |}.
 
 
-  Definition get_slc_val (slc : mem_slc) (s : state) : option mem_slc_val :=
-    flatten_mem_slc_vals slc (List.map (fun '(_, _, w) =>
-                                          (w.(Arc.write_footprint), w.(Arc.write_val)))
-                                       s.(mem)).
+  Definition get_slc_val (slc : mem_slc) (s : state) : option Arc.mem_reads_from :=
+    let '(uslcs, rf) :=
+        reads_from (fun '(tid, iid, wid) '(tid', iid', wid') =>
+                      (Nat.eqb tid tid' && Nat.eqb iid iid' && Nat.eqb wid wid')%bool)
+                   (List.map (fun '(tid, iid, w) =>
+                                ((tid, iid, w.(Arc.write_id)),(w.(Arc.write_footprint), w.(Arc.write_val))))
+                             s.(mem))
+                   [slc] [] in
+    match uslcs with
+    | nil => Some rf
+    | _ => None
+    end.
 
-  Definition read_instruction (loc : mem_loc) (s : state) : option mem_slc_val :=
+  Definition read_instruction (loc : mem_loc) (s : state) : option Arc.mem_reads_from :=
     (* TODO: don't assume all instructions are 4 bytes *)
     let ins_size := 4 in
     get_slc_val {| location := loc; size := ins_size |} s.
 
   Definition read
-             (slc : mem_slc) (s : state) : option mem_slc_val :=
+             (slc : mem_slc) (s : state) : option Arc.mem_reads_from :=
     get_slc_val slc s.
 
-  Definition write (w : mem_write) (tid : thread_id_t) (iid : instruction_id_t) (s : state) : state :=
-             (slc : mem_slc) (val : mem_slc_val) (tid : thread_id_t)
-             (iid : instruction_id_t) (wid : mem_write_id_t) (s : state) : state :=
-    s <| mem :=
-
+  Definition write (w : Arc.mem_write) (tid : thread_id_t)
+             (iid : instruction_id_t) (s : state) : state :=
+    s <| mem := (tid, iid, w)::s.(mem) |>.
 End Make.

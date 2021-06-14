@@ -333,9 +333,8 @@ Module Make (Arc : ArcSig).
     '(_, (_, loc, ins), _) <- get_instruction_state iid s
     ;; match ins with
        | None =>
-         '(slc, vals) <- trigger (StEReadInstruction loc)
-         ;; let vals := List.map (fun '(_, _, _, s, v) => (s, v)) vals in
-            val <- try_unwrap_option (flatten_mem_slc_vals slc vals)
+         '(slc, rf) <- trigger (StEReadInstruction loc)
+         ;; val <- try_unwrap_option (mem_slc_val_of_reads_from slc rf)
                                     "try_fetch_and_decode_or_restart: some bytes are missing from memory read of instruction."
          ;; let ast := Arc.InsSem.decode (nat_of_mem_slc_val val) in
             let ins := initial_decoded_instruction_state ast in
@@ -449,11 +448,9 @@ Module Make (Arc : ArcSig).
                                     "try_complete_load_ops: no mem reads."
     (* ;; guard (isTrue (Forall (fun u => u = []) rs.(rs_unsat_slcs))) *)
     ;; val <- try_unwrap_option
-               (flatten_mem_slc_vals
+               (mem_slc_val_of_reads_from
                   rs.(rs_footprint)
-                       (List.concat (List.map
-                                       (List.map (fun '(_, _, _, s, v) => (s, v)))
-                                       rs.(rs_reads_from))))
+                       (List.concat rs.(rs_reads_from)))
                "try_complete_load_ops: some bytes are missing from memory read."
     ;; ret (s, val).
 
@@ -527,10 +524,9 @@ Module Make (Arc : ArcSig).
     ret (s, tt).
 
   Definition handle_threadE {E} `{storageE -< E} `{exceptE error -< E} `{exceptE disabled -< E}
-    : wrapE threadE instruction_id_t ~>
-            stateT state (itree E) :=
+             (iid : instruction_id_t)
+    : threadE ~> stateT state (itree E) :=
     fun _ e s =>
-      let '(Wrap e iid) := e in
       match e with
       | ThEFetchAndDecodeOrRestart => try_fetch_and_decode_or_restart iid s
       | ThEFinishIns => try_finish_instruction iid s

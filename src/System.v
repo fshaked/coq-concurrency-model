@@ -3,7 +3,7 @@ From Coq Require Import
      NArith.NArith
      Lists.List
      Lists.ListSet
-     (* Strings.String *)
+     Strings.String
      Morphisms
      Setoid
      RelationClasses .
@@ -18,9 +18,8 @@ From ExtLib Require Import
 From ITree Require Import
      ITree
      ITreeFacts
-     Events.MapDefault
-     Events.StateFacts
-     Events.Nondeterminism.
+     Events.Exception
+     Events.State.
 
 (* The [sum1] types with automatic application of commutativity and
    associativity are prone to infinite instance resolution loops.
@@ -28,6 +27,7 @@ From ITree Require Import
 Typeclasses eauto := 5.
 
 From RecordUpdate Require Import RecordSet.
+Import RecordSetNotations.
 
 Import ListMonad.
 Import ITreeNotations.
@@ -45,103 +45,89 @@ Local Open Scope monad_scope.
 (* Local Open Scope monad_scope. *)
 
 Module Make (Arc : ArcSig).
-  Module ThrDenote := Thread.Denote Arc.
+  Module Thread := Thread.Make Arc.
+  Module Storage := Storage.Make Arc.
 
   Definition thread_it {E}
-             `{wrapE ThrDenote.threadE (Thread.instruction_id_t * thread_id_t) -< E}
+             `{wrapE Thread.threadE (instruction_id_t * thread_id_t) -< E}
              `{nondetFinE -< E}
-             '((loc, tid) : nat * thread_id_t)
+             (tid : thread_id_t)
     : itree E (Types.result unit unit) :=
     (* TODO: convert loc from nat to Arc.InsSem.pc_t *)
-    let it := ThrDenote.denote (0, loc) in
-    let it := map_wrap_event_in_it ThrDenote.threadE (fun iid => (iid, tid)) _ it in
+    let it := Thread.denote 0 in
+    let it := map_wrap_event_in_it Thread.threadE (fun iid => (iid, tid)) _ it in
     resum_it _ it.
 
   Definition denote {E}
-             `{wrapE ThrDenote.threadE (Thread.instruction_id_t * thread_id_t) -< E}
+             `{wrapE Thread.threadE (instruction_id_t * thread_id_t) -< E}
              `{nondetFinE -< E}
-             (entry_locs : list nat)
+             (tids : list thread_id_t)
     : itree E unit :=
+    let its := List.map (fun tid => (tid, thread_it tid)) tids in
     let it :=
-        List.length entry_locs
-        $> List.seq 0
-        $> List.combine entry_locs
-        $> List.map thread_it
-        $> scheduler
-             (fun 'tt => ITree.spin) (* spawn *)
-                    (* The spin is unreachable.
-                       TODO: do we want to support spawning of new threads?
-                       Probably not. *)
-             (fun 'tt _ => tt) (* fold_results *)
-             tt in (* acc_result *)
+        scheduler
+          Nat.eqb
+          (fun tid => ITree.spin) (* spawn *)
+             (* The spin is unreachable.
+                TODO:   do we want to support spawning of new threads?
+                Probably not. *)
+          (fun 'tt _ => tt) (* fold_results *)
+          tt its None in
     resum_it _ it.
 
-  Module ThrState := Thread.State Arc.
-  Module StoState := Storage.State Arc.
-
   Record state :=
-    mk_state {
-        storage : StoState.state;
-        (* thread-tid is in index tid *)
-        threads : list ThrState.state }.
+    mk_state { storage : Storage.state;
+               (* thread-tid is in index tid *)
+               threads : list Thread.state }.
 
   Instance eta_state : Settable _ :=
     settable! mk_state <storage; threads>.
 
-  Definition initial_state (mem : Arc.mem_loc -> option Arc.mem_slc_val) (entry_locs : list Arc.mem_loc)
+  Definition initial_state (mem : list (thread_id_t * instruction_id_t * Arc.mem_write))
+             (entry_locs : list mem_loc)
     : state :=
-    {| storage := StoState.initial_state mem;
-       threads := List.map ThrState.initial_state entry_locs |}.
-
-
-  (* Definition handle_thr_memE {E} *)
-  (*   : wrapE (wrapE Arc.InsSem.memE Thread.instruction_id_t) thread_id_t ~> stateT state (itree E) := *)
-  (*   fun _ e s => *)
-  (*     let '(Wrap e tid) := e in *)
-  (*     match List.nth_error s.(threads) tid with *)
-  (*     | Some thr_state => *)
-  (*       '(thr_state, a) <- ThrState.handle_memE _ e thr_state *)
-  (*       ;; let ts := list_replace_nth tid thr_state s.(threads) in *)
-  (*          Ret (s <| threads := ts |>, a) *)
-  (*     | None => ITree.spin (* Unreachable *) *)
-  (*     end. *)
-
-  Definition get_thread_state {E} `{exceptE error -< E}
-             (tid : thread_id_t) (s : state)
-    : itree E ThrState.state :=
-    match List.nth_error s.(threads) tid with
-    | Some thr_state => ret thr_state
-    | None => throw (Error "thread is missing")
-    end.
-
-  Definition handle_threadE {E}
-             `{wrapE ThrState.storageE thread_id_t -< E}
-             `{exceptE disabled -< E}
-             `{exceptE error -< E}
-    : wrapE ThrDenote.threadE (Thread.instruction_id_t * thread_id_t) ~>
-            stateT state (itree E) :=
-    fun _ e s =>
-      let '(Wrap e (iid, tid)) := e in
-      thr_state <- get_thread_state tid s
-      ;; let it := ThrState.handle_threadE e iid thr_state in
-         '(thr_state, answer) <- wrap_event_in_it ThrThread.storageE tid _ it
-      ;; let ts := list_replace_nth tid thr_state s.(threads) in
-         ret (s <| threads := ts |>, answer).
+    {| storage := Storage.initial_state mem;
+       threads := List.map (Thread.initial_state 0)  entry_locs |}.
 
   Definition handle_storageE {E}
              `{exceptE disabled -< E}
              `{exceptE error -< E}
-    : wrapE ThrState.storageE thread_id_t ~>
+    : wrapE Thread.storageE (instruction_id_t * thread_id_t) ~>
             stateT state (itree E) :=
     fun _ e s =>
-      let '(Wrap e tid) := e in
+      let '(Wrap e (iid, tid)) := e in
+      match e with
+      | Thread.StEReadInstruction pc => Ret (s, ({| location := pc; size := 4 |}, []))
+      | Thread.StERead read uslcs => Ret (s, [])
+      | Thread.StEWrite write => Ret (s, tt)
+      end.
+
+  Definition handle_threadE {E}
+             `{wrapE Thread.storageE (instruction_id_t * thread_id_t) -< E}
+             `{exceptE disabled -< E}
+             `{exceptE error -< E}
+    : wrapE Thread.threadE (instruction_id_t * thread_id_t) ~>
+            stateT state (itree E) :=
+    fun _ e s =>
+      let '(Wrap e (iid, tid)) := e in
+      Thread.handle_threadE iid _ e thr_state
+
+
+      thr_state <- try_unwrap_option (List.nth_error s.(threads) tid)
+                                    "get_thread_state: thread is missing"
+      ;; let it := Thread.handle_threadE iid _ e thr_state in
+         (* FIXME: how does the storage state change propagate? *)
+         '(thr_state, answer) <- resum_it _ (wrap_event_in_it Thread.storageE (iid, tid) _ it)
+      ;; let ts := list_replace_nth tid thr_state s.(threads) in
+         ret (s <| threads := ts |>, answer).
 
   Definition interp_system {E}
-    : itree (wrapE ThrDenote.threadE (Thread.instruction_id_t * thread_id_t) +' E) ~>
+    : itree (wrapE Thread.threadE (Thread.instruction_id_t * thread_id_t) +' E) ~>
             stateT state (itree E) :=
     let h := cat handle_threadE handle_storageE in
-        interp_state (case_ h pure_state).
+    interp_state (case_ h pure_state).
 
-  Definition run_system (mem : nat -> option nat) (entry_locs : list nat) :=
-    interp_system (denote entry_locs) (initial_state mem entry_locs).
+  Definition run_system (mem : list (thread_id_t * instruction_id_t * Arc.mem_write)) (entry_locs : list Arc.InsSem.pc_t) :=
+    let tids := List.seq 0 (List.length entry_locs) in
+    interp_system (denote tids) (initial_state mem entry_locs).
 End Make.

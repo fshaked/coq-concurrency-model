@@ -132,64 +132,27 @@ Fixpoint reads_from {T} (eqb_T : T -> T -> bool)
   | nil => (uslcs, rf)
   end.
 
-
-
-
-Definition flatten_mem_slc_vals {T} (slc : mem_slc)
-           (vals : list (T * (mem_slc * mem_slc_val))) (eqb_T : T -> T -> bool)
-  : option mem_slc_val :=
-  let byte_locs := List.seq slc.(location) slc.(size) in
-  let byte_of_val slc val (loc : nat) :=
-      if decide (slc.(location) <= loc < (slc.(location) + slc.(size))) then
-        List.nth_error val (loc - slc.(location))
-      else None in
-  let fix byte_of_vals vals loc :=
-      match vals with
-      | (id' ,(slc', val'))::vals' =>
-        match byte_of_val slc' val' loc with
-        | Some b => Some (id, b)
-        | None => byte_of_vals vals' loc
-        end
-      | [] => None
-      end in
-  let bytes := List.map (byte_of_vals vals) byte_locs in
-  match List.fold_left (fun acc b =>
-                          match acc, b with
-                          | Some (id_acc, v_acc), Some (id, v) => Some (id::id_acc, v::v_acc)
-                          | _, _ => None
-                          end)
-                       bytes
-                       (Some (nil, nil)) with
-  | Some (ids, val) =>
-    let reads_from := List.filter (fun (id, _) => List.existsb (eqb_T id) ids) vals in
-    Some (reads_from, val)
-  | None => None
+Fixpoint mem_slc_val_of_reads_from_helper {T}
+           (slc : mem_slc) (vals : list (T * (mem_slc * mem_slc_val)))
+           (val : list (option nat))
+  : list (option nat) :=
+  match vals with
+  | nil => val
+  | (_, (s, v))::vals =>
+    let val :=
+        List.fold_left (fun val '(i, b) => list_replace_nth i (Some b) val)
+                       (List.combine (List.seq (s.(location) - slc.(location)) s.(size)) v)
+                       val in
+    mem_slc_val_of_reads_from_helper slc vals val
   end.
 
-Definition flatten_mem_slc_vals (slc : mem_slc) (vals : list (mem_slc * mem_slc_val))
+Definition mem_slc_val_of_reads_from {T}
+           (slc : mem_slc) (vals : list (T * (mem_slc * mem_slc_val)))
   : option mem_slc_val :=
-  let byte_locs := List.seq slc.(location) slc.(size) in
-  let byte_of_val slc val (loc : nat) :=
-      if decide (slc.(location) <= loc < (slc.(location) + slc.(size))) then
-        List.nth_error val (loc - slc.(location))
-      else None in
-  let fix byte_of_vals vals loc :=
-      match vals with
-      | (slc', val')::vals' =>
-        match byte_of_val slc' val' loc with
-        | Some b => Some b
-        | None => byte_of_vals vals' loc
-        end
-      | [] => None
-      end in
-  let bytes := List.map (byte_of_vals vals) byte_locs in
-  List.fold_left (fun acc b =>
-                    match acc, b with
-                    | Some acc, Some b => Some (b::acc)
-                    | _, _ => None
-                    end)
-                 bytes
-                 (Some nil).
+  let bytes := mem_slc_val_of_reads_from_helper slc vals (List.repeat None slc.(size)) in
+  if decide (Forall (fun b => b <> None) bytes) then
+    Some (List.map (fun b => match b with Some b => b | None => 0 end) bytes)
+  else None.
 
 Definition nat_of_mem_slc_val (val : mem_slc_val) : nat :=
   List.fold_left
@@ -268,8 +231,8 @@ Module Type ArcSig.
                    write_val : mem_slc_val;
                    write_kind : InsSem.mem_read_kind }.
 
-  Definition mem_reads_from : Type := list (thread_id_t * instruction_id_t * mem_write_id_t *
-                                            mem_slc * mem_slc_val).
+  Definition mem_reads_from : Type := list ((thread_id_t * instruction_id_t * mem_write_id_t) *
+                                            (mem_slc * mem_slc_val)).
 End ArcSig.
 
 Module Type ThreadSig.
