@@ -92,42 +92,46 @@ Module Make (Arc : ArcSig).
   Definition handle_storageE {E}
              `{exceptE disabled -< E}
              `{exceptE error -< E}
-    : wrapE Thread.storageE (instruction_id_t * thread_id_t) ~>
-            stateT state (itree E) :=
+             (iid : instruction_id_t) (tid : thread_id_t)
+    : Thread.storageE ~> stateT Storage.state (itree E) :=
     fun _ e s =>
-      let '(Wrap e (iid, tid)) := e in
       match e with
       | Thread.StEReadInstruction pc => Ret (s, ({| location := pc; size := 4 |}, []))
       | Thread.StERead read uslcs => Ret (s, [])
       | Thread.StEWrite write => Ret (s, tt)
       end.
 
+  Definition interp_storage {E}
+             `{exceptE disabled -< E}
+             `{exceptE error -< E}
+             (iid : instruction_id_t) (tid : thread_id_t)
+    : itree (Thread.storageE +' E) ~> stateT Storage.state (itree E) :=
+    interp_state (case_ (handle_storageE iid tid) pure_state).
+
   Definition handle_threadE {E}
-             `{wrapE Thread.storageE (instruction_id_t * thread_id_t) -< E}
              `{exceptE disabled -< E}
              `{exceptE error -< E}
     : wrapE Thread.threadE (instruction_id_t * thread_id_t) ~>
             stateT state (itree E) :=
     fun _ e s =>
       let '(Wrap e (iid, tid)) := e in
-      Thread.handle_threadE iid _ e thr_state
-
-
       thr_state <- try_unwrap_option (List.nth_error s.(threads) tid)
                                     "get_thread_state: thread is missing"
-      ;; let it := Thread.handle_threadE iid _ e thr_state in
-         (* FIXME: how does the storage state change propagate? *)
-         '(thr_state, answer) <- resum_it _ (wrap_event_in_it Thread.storageE (iid, tid) _ it)
+      ;; let it : itree _ (Thread.state * _) := Thread.handle_threadE iid _ e thr_state in
+         '(sto_state, (thr_state, ans)) <- interp_storage iid tid _ it s.(storage)
       ;; let ts := list_replace_nth tid thr_state s.(threads) in
-         ret (s <| threads := ts |>, answer).
+         ret (s <| storage := sto_state |> <| threads := ts |>, ans).
 
   Definition interp_system {E}
-    : itree (wrapE Thread.threadE (Thread.instruction_id_t * thread_id_t) +' E) ~>
+             `{exceptE disabled -< E}
+             `{exceptE error -< E}
+    : itree (wrapE Thread.threadE (instruction_id_t * thread_id_t) +' E) ~>
             stateT state (itree E) :=
-    let h := cat handle_threadE handle_storageE in
-    interp_state (case_ h pure_state).
+    interp_state (case_ handle_threadE pure_state).
 
-  Definition run_system (mem : list (thread_id_t * instruction_id_t * Arc.mem_write)) (entry_locs : list Arc.InsSem.pc_t) :=
+  Definition run_system
+             (mem : list (thread_id_t * instruction_id_t * Arc.mem_write))
+             (entry_locs : list Arc.InsSem.pc_t) :=
     let tids := List.seq 0 (List.length entry_locs) in
-    interp_system (denote tids) (initial_state mem entry_locs).
+    interp_system _ (denote tids) (initial_state mem entry_locs).
 End Make.
