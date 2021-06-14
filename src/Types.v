@@ -210,15 +210,19 @@ End InstructionSemanticsSig.
 Module Type ArcSig.
   Declare Module InsSem : InstructionSemanticsSig.
 
+  (** InsSem-Thread interface *)
+
   Variable instruction_kind : Type.
   Variable instruction_kind_from_ast : InsSem.ast -> instruction_kind.
+
+  Variable mem_read_kind_of_ins_kind : instruction_kind -> InsSem.mem_read_kind.
+  Variable mem_write_kind_of_ins_kind : instruction_kind -> InsSem.mem_read_kind.
 
   Variable split_load_mem_slc : instruction_kind -> mem_slc -> list mem_slc.
   Variable split_store_mem_slc_val : instruction_kind -> mem_slc -> mem_slc_val ->
                                      list (mem_slc * mem_slc_val).
 
-  Variable mem_read_kind_of_ins_kind : instruction_kind -> InsSem.mem_read_kind.
-  Variable mem_write_kind_of_ins_kind : instruction_kind -> InsSem.mem_read_kind.
+  (** Thread-Storage interface *)
 
   Record mem_read : Type :=
     mk_mem_read { read_id : mem_read_id_t;
@@ -233,7 +237,9 @@ Module Type ArcSig.
 
   Definition mem_reads_from : Type := list ((thread_id_t * instruction_id_t * mem_write_id_t) *
                                             (mem_slc * mem_slc_val)).
-End ArcSig.
 
-Module Type ThreadSig.
-End ThreadSig.
+  Variant storageE : Type -> Type :=
+  | StEReadInstruction : InsSem.pc_t -> storageE (mem_slc * mem_reads_from)
+  | StERead : mem_read -> (list mem_slc) -> storageE mem_reads_from
+  | StEWrite : mem_write -> storageE unit.
+End ArcSig.

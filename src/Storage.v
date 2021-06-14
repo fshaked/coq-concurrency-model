@@ -15,16 +15,27 @@ From ExtLib Require Import
 (*      Structures.Traversable *)
 (*      Data.List. *)
 
+From ITree Require Import
+     ITree
+     ITreeFacts
+     Events.Exception
+     Events.State.
+
+(* The [sum1] types with automatic application of commutativity and
+   associativity are prone to infinite instance resolution loops.
+   This bounds the instance search depth: *)
+Typeclasses eauto := 5.
+
 From RecordUpdate Require Import RecordSet.
 Import RecordSetNotations.
 
 Import ListMonad.
+Import ITreeNotations.
 Import Monads.
 Import MonadNotation.
 Import ListNotations.
 
 Require Import Utils Types.
-(* Require Import Thread. *)
 
 Local Open Scope list.
 Local Open Scope itree_scope.
@@ -39,7 +50,6 @@ Module Make (Arc : ArcSig).
   Definition initial_state (mem : list (thread_id_t * instruction_id_t * Arc.mem_write))
     : state :=
     {| mem := mem |}.
-
 
   Definition get_slc_val (slc : mem_slc) (s : state) : option Arc.mem_reads_from :=
     let '(uslcs, rf) :=
@@ -66,4 +76,17 @@ Module Make (Arc : ArcSig).
   Definition write (w : Arc.mem_write) (tid : thread_id_t)
              (iid : instruction_id_t) (s : state) : state :=
     s <| mem := (tid, iid, w)::s.(mem) |>.
+
+  Definition handle_storageE {E}
+             `{exceptE disabled -< E}
+             `{exceptE error -< E}
+             (iid : instruction_id_t) (tid : thread_id_t)
+    : Arc.storageE ~> stateT state (itree E) :=
+    fun _ e s =>
+      match e with
+      | Arc.StEReadInstruction pc => Ret (s, ({| location := pc; size := 4 |}, []))
+      | Arc.StERead read uslcs => Ret (s, [])
+      | Arc.StEWrite write => Ret (s, tt)
+      end.
+
 End Make.

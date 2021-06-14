@@ -278,11 +278,6 @@ Module Make (Arc : ArcSig).
     {| next_iid := iid + 1;
        instruction_tree := Tree (iid, loc, None) [] |}.
 
-  Variant storageE : Type -> Type :=
-  | StEReadInstruction : Arc.InsSem.pc_t -> storageE (mem_slc * Arc.mem_reads_from)
-  | StERead : Arc.mem_read -> (list mem_slc) -> storageE Arc.mem_reads_from
-  | StEWrite : Arc.mem_write -> storageE unit.
-
   Definition get_instruction_state {E} `{exceptE error -< E}
              (iid : instruction_id_t) (s : state)
     : itree E (list instruction_state * instruction_state * list (tree instruction_state)) :=
@@ -327,13 +322,13 @@ Module Make (Arc : ArcSig).
     in
     s <| instruction_tree := helper s.(instruction_tree) |>.
 
-  Definition try_fetch_and_decode_or_restart {E} `{storageE -< E} `{exceptE error -< E}
+  Definition try_fetch_and_decode_or_restart {E} `{Arc.storageE -< E} `{exceptE error -< E}
              (iid : instruction_id_t) (s : state)
     : itree E (state * (list instruction_id_t * Arc.InsSem.ast)) :=
     '(_, (_, loc, ins), _) <- get_instruction_state iid s
     ;; match ins with
        | None =>
-         '(slc, rf) <- trigger (StEReadInstruction loc)
+         '(slc, rf) <- trigger (Arc.StEReadInstruction loc)
          ;; val <- try_unwrap_option (mem_slc_val_of_reads_from slc rf)
                                     "try_fetch_and_decode_or_restart: some bytes are missing from memory read of instruction."
          ;; let ast := Arc.InsSem.decode (nat_of_mem_slc_val val) in
@@ -417,7 +412,7 @@ Module Make (Arc : ArcSig).
 
   Definition try_sat_mem_load_op_from_storage {E}
              `{exceptE error -< E} `{exceptE disabled -< E}
-             `{storageE -< E}
+             `{Arc.storageE -< E}
              (rid : mem_read_id_t) (iid : instruction_id_t) (s : state)
     : itree E (state * list instruction_id_t) :=
     '(_, ins, subts) <- get_dec_instruction_state iid s
@@ -430,7 +425,7 @@ Module Make (Arc : ArcSig).
                               "try_sat_mem_load_op_from_storage: missing rid"
     ;; rf_forward <- try_unwrap_option (List.nth_error rs.(rs_reads_from) rid)
                                       "try_sat_mem_load_op_from_storage: missing rid."
-    ;; rf_storage <- trigger (StERead rr unsat_slcs)
+    ;; rf_storage <- trigger (Arc.StERead rr unsat_slcs)
     ;; let rs := rs <| rs_unsat_slcs := list_replace_nth rid [] rs.(rs_unsat_slcs) |>
                     <| rs_reads_from := list_replace_nth rid (rf_forward ++ rf_storage) rs.(rs_reads_from) |> in
        let ins := ins <| ins_mem_reads := Some rs |> in
@@ -498,7 +493,7 @@ Module Make (Arc : ArcSig).
 
   Definition try_propagate_store_op {E}
              `{exceptE error -< E} `{exceptE disabled -< E}
-             `{storageE -< E}
+             `{Arc.storageE -< E}
              (wid : mem_write_id_t) (iid : instruction_id_t) (s : state)
     : itree E (state * list instruction_id_t) :=
     '(_, ins, subts) <- get_dec_instruction_state iid s
@@ -508,7 +503,7 @@ Module Make (Arc : ArcSig).
     ;; w <- try_unwrap_option (List.nth_error ws.(ws_writes) wid)
                               "try_propagate_store_op: missing wid"
     (* FIXME: check mem-write-propagation condition *)
-    ;; 'tt <- trigger (StEWrite w)
+    ;; 'tt <- trigger (Arc.StEWrite w)
     ;; let ws := ws <| ws_has_propagated := list_replace_nth wid true ws.(ws_has_propagated) |> in
        let ins := ins <| ins_mem_writes := Some ws |> in
        (* FIXME: compute iids that need to be restarted *)
@@ -523,7 +518,9 @@ Module Make (Arc : ArcSig).
     (* FIXME: is there anything we need to check here? *)
     ret (s, tt).
 
-  Definition handle_threadE {E} `{storageE -< E} `{exceptE error -< E} `{exceptE disabled -< E}
+  Definition handle_threadE {E}
+             `{exceptE error -< E} `{exceptE disabled -< E}
+             `{Arc.storageE -< E}
              (iid : instruction_id_t)
     : threadE ~> stateT state (itree E) :=
     fun _ e s =>

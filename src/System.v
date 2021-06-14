@@ -89,24 +89,12 @@ Module Make (Arc : ArcSig).
     {| storage := Storage.initial_state mem;
        threads := List.map (Thread.initial_state 0)  entry_locs |}.
 
-  Definition handle_storageE {E}
-             `{exceptE disabled -< E}
-             `{exceptE error -< E}
-             (iid : instruction_id_t) (tid : thread_id_t)
-    : Thread.storageE ~> stateT Storage.state (itree E) :=
-    fun _ e s =>
-      match e with
-      | Thread.StEReadInstruction pc => Ret (s, ({| location := pc; size := 4 |}, []))
-      | Thread.StERead read uslcs => Ret (s, [])
-      | Thread.StEWrite write => Ret (s, tt)
-      end.
-
   Definition interp_storage {E}
              `{exceptE disabled -< E}
              `{exceptE error -< E}
              (iid : instruction_id_t) (tid : thread_id_t)
-    : itree (Thread.storageE +' E) ~> stateT Storage.state (itree E) :=
-    interp_state (case_ (handle_storageE iid tid) pure_state).
+    : itree (Arc.storageE +' E) ~> stateT Storage.state (itree E) :=
+    interp_state (case_ (Storage.handle_storageE iid tid) pure_state).
 
   Definition handle_threadE {E}
              `{exceptE disabled -< E}
