@@ -88,7 +88,7 @@ Module Make (Arc : ArcSig).
   Definition try_write {E}
              (* `{exceptE disabled -< E} *)
              (* `{exceptE error -< E} *)
-             (iid : instruction_id_t) (tid : thread_id_t)
+             (tid : thread_id_t) (iid : instruction_id_t)
              (w : Arc.mem_write) (s : state)
     : itree E (state * unit) :=
     Ret (s <| mem := (tid, iid, w)::s.(mem) |>, tt).
@@ -102,6 +102,6 @@ Module Make (Arc : ArcSig).
       match e with
       | Arc.StEReadInstruction pc => try_read_instruction pc s
       | Arc.StERead read uslcs => try_read read uslcs s
-      | Arc.StEWrite write => try_write iid tid write s
+      | Arc.StEWrite write => try_write tid iid write s
       end.
 End Make.
