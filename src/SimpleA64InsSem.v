@@ -27,7 +27,7 @@ Require Import Utils Types.
 Require Import Decision.
 
 
-Module Core <: InsSemCoreSig.
+Module AArch64Core <: InsSemCoreSig.
   Variant gpr : Type :=
   (* GPRs *)
   | R0 | R1 | R2 | R3 | R4
@@ -71,12 +71,12 @@ Module Core <: InsSemCoreSig.
   (* op, dst, lhs, rhs *)
   | BinOp : binop -> gpr -> gpr -> operand -> _ast.
   Definition ast := _ast.
-End Core.
+End AArch64Core.
 
-Module Make : InsSemSig.
-  Module Core := Core.
+Module AArch64 <: InsSemSig.
+  Module Core := AArch64Core.
   Include Core.
-  Include InsSemCoreFacts Core.
+  Include InsSemCoreFacts AArch64Core.
 
   Definition full_reg_of_reg (r : reg) :=
     (r, (0, reg_size r)).
@@ -163,5 +163,32 @@ Module Make : InsSemSig.
     end.
 
   Definition  next_pc (pc : mem_loc) (a : ast) : list mem_loc := [pc + 4].
+End AArch64.
 
-End Make.
+Module Armv8Core : ArcCoreSig.
+  Module InsSem := AArch64.
+
+  Definition mem_read_kind_of_ast (a : InsSem.ast) : InsSem.mem_read_kind :=
+    (* FIXME: *)
+    InsSem.RKNormal.
+
+  Definition mem_write_kind_of_ast (a : InsSem.ast) : InsSem.mem_write_kind :=
+    (* FIXME: *)
+    InsSem.WKNormal.
+
+  Definition split_load_mem_slc (a : InsSem.ast) (slc : mem_slc)
+    : list mem_slc :=
+    (* FIXME: *)
+    [slc].
+
+  Definition split_store_mem_slc_val (a : InsSem.ast) (slc : mem_slc) (val : mem_slc_val)
+    : list (mem_slc * mem_slc_val) :=
+    (* FIXME: *)
+    [(slc, val)].
+End Armv8Core.
+
+Module Armv8 : ArcSig.
+  Module Core := Armv8Core.
+  Include Core.
+  Include ArcCoreFacts Core.
+End Armv8.

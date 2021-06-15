@@ -222,7 +222,7 @@ Module Type InsSemSig.
   Variable next_pc : mem_loc -> ast -> list mem_loc.
 End InsSemSig.
 
-Module Type ArcSig.
+Module Type ArcCoreSig.
   Declare Module InsSem : InsSemSig.
 
   (** InsSem-Thread interface *)
@@ -233,28 +233,37 @@ Module Type ArcSig.
   Variable split_load_mem_slc : InsSem.ast -> mem_slc -> list mem_slc.
   Variable split_store_mem_slc_val : InsSem.ast -> mem_slc -> mem_slc_val ->
                                      list (mem_slc * mem_slc_val).
+End ArcCoreSig.
 
-  (** Thread-Storage interface *)
-
+Module ArcCoreFacts (ArcCore : ArcCoreSig).
   Record mem_read : Type :=
     mk_mem_read { read_id : mem_read_id_t;
                   read_footprint : mem_slc;
-                  read_kind : InsSem.mem_read_kind }.
+                  read_kind : ArcCore.InsSem.mem_read_kind }.
 
-  Record mem_write : Type :=
+  Record _mem_write : Type :=
     mk_mem_write { write_id : mem_write_id_t;
                    write_footprint : mem_slc;
                    write_val : mem_slc_val;
-                   write_kind : InsSem.mem_write_kind }.
+                   write_kind : ArcCore.InsSem.mem_write_kind }.
+  Definition mem_write := _mem_write.
 
   Definition mem_reads_from : Type := list ((thread_id_t * instruction_id_t * mem_write_id_t) *
                                             (mem_slc * mem_slc_val)).
 
-  Variant storageE : Type -> Type :=
-  | StEReadInstruction : mem_loc -> storageE (mem_slc * mem_reads_from)
-  | StERead : mem_read -> (list mem_slc) -> storageE mem_reads_from
-  | StEWrite : mem_write -> storageE unit.
+  Variant _storageE : Type -> Type :=
+  | StEReadInstruction : mem_loc -> _storageE (mem_slc * mem_reads_from)
+  | StERead : mem_read -> (list mem_slc) -> _storageE mem_reads_from
+  | StEWrite : mem_write -> _storageE unit.
+  Definition storageE := _storageE.
+End ArcCoreFacts.
+
+Module Type ArcSig.
+  Declare Module Core : ArcCoreSig.
+  Include Core.
+  Include ArcCoreFacts Core.
 End ArcSig.
+
 
 Module Type ThreadSig (Arc : ArcSig).
   Variable state : Type.
