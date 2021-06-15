@@ -218,8 +218,6 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
   Record decoded_instruction_state :=
     mk_decoded_instruction_state {
         ins_ast : Arc.InsSem.ast;
-        (* statically analysed data about the instruction*)
-        ins_kind : Arc.instruction_kind;
 
         ins_reg_reads : list reg_read_state;
         ins_reg_writes : list reg_write_state;
@@ -230,16 +228,17 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
         ins_finished : bool }.
 
   Instance eta_decoded_instruction_state : Settable _ :=
-    settable! mk_decoded_instruction_state <ins_ast; ins_kind; ins_reg_reads; ins_reg_writes; ins_mem_reads; ins_mem_writes; ins_finished>.
+    settable! mk_decoded_instruction_state <ins_ast; ins_reg_reads; ins_reg_writes; ins_mem_reads; ins_mem_writes; ins_finished>.
 
   Definition initial_decoded_instruction_state
              (ast : Arc.InsSem.ast)
     : decoded_instruction_state :=
-    let '(regs_in, regs_out) := Arc.InsSem.regs_from_ast ast in
+    let info := Arc.InsSem.info_of_ast ast in
     {| ins_ast := ast;
-       ins_kind := (Arc.instruction_kind_from_ast ast);
-       ins_reg_reads := List.map (fun '(slc, addr) => mk_reg_read_state slc addr [] None) regs_in;
-       ins_reg_writes := List.map (fun slc => mk_reg_write_state slc None [] false) regs_out;
+       ins_reg_reads := List.map (fun '(slc, addr) => mk_reg_read_state slc addr [] None)
+                                 info.(Arc.InsSem.input_regs);
+       ins_reg_writes := List.map (fun slc => mk_reg_write_state slc None [] false)
+                                  info.(Arc.InsSem.output_regs);
        ins_mem_reads := None;
        ins_mem_writes := None;
        ins_finished := false |}.
@@ -315,10 +314,10 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
          '(slc, rf) <- trigger (Arc.StEReadInstruction loc)
          ;; val <- try_unwrap_option (mem_slc_val_of_reads_from slc rf)
                                     "try_fetch_and_decode_or_restart: some bytes are missing from memory read of instruction."
-         ;; let ast := Arc.InsSem.decode (nat_of_mem_slc_val val) in
-            let ins := initial_decoded_instruction_state ast in
-            let next_pcs := Arc.InsSem.next_pc (Arc.pc_of_mem_loc loc) ast in
-            let next_pcs := List.map Arc.mem_loc_of_pc next_pcs in
+         ;; ast <- try_unwrap_option (Arc.InsSem.decode val)
+                                    "try_fetch_and_decode_or_restart: decoding of instruction failed"
+         ;; let ins := initial_decoded_instruction_state ast in
+            let next_pcs := Arc.InsSem.next_pc loc ast in
             let iids := List.seq s.(next_iid) (List.length next_pcs) in
             let subts := List.map (fun '(iid, pc) => Tree (iid, pc, None) [])
                                   (List.combine iids next_pcs) in
@@ -372,8 +371,8 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
              (slc : mem_slc) (iid : instruction_id_t) (s : state)
     : itree F (state * list mem_read_id_t) :=
     '(_, ins, _) <- get_dec_instruction_state iid s
-    ;; let sub_slcs := Arc.split_load_mem_slc ins.(ins_kind) slc in
-       let kind := Arc.mem_read_kind_of_ins_kind ins.(ins_kind) in
+    ;; let sub_slcs := Arc.split_load_mem_slc ins.(ins_ast) slc in
+       let kind := Arc.mem_read_kind_of_ast ins.(ins_ast) in
        let rids := List.seq 0 (List.length sub_slcs) in
        let reads := List.map
                       (fun '(rid, slc) => {| Arc.read_id := rid;
@@ -451,8 +450,8 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
     '(_, ins, _) <- get_dec_instruction_state iid s
     ;; ws <- try_unwrap_option ins.(ins_mem_writes)
                                     "try_insta_mem_store_op_vals: no mem writes"
-    ;; let sub_slcs := Arc.split_store_mem_slc_val ins.(ins_kind) ws.(ws_footprint) val in
-       let kind := Arc.mem_write_kind_of_ins_kind ins.(ins_kind) in
+    ;; let sub_slcs := Arc.split_store_mem_slc_val ins.(ins_ast) ws.(ws_footprint) val in
+       let kind := Arc.mem_write_kind_of_ast ins.(ins_ast) in
        let wids := List.seq 0 (List.length sub_slcs) in
        let writes := List.map
                       (fun '(wid, (slc, val)) => {| Arc.write_id := wid;

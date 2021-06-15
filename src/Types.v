@@ -150,28 +150,52 @@ Definition mem_slc_val_of_nat (val : nat) (size : nat) : mem_slc_val :=
     (fun off => Nat.land (2 ^ 8 - 1) (Nat.shiftr val (8 * off)))
     (List.seq 0 size).
 
-Module Type InstructionSemanticsSig.
+Module Type InsSemCoreSig.
   Variable reg : Type.
   Variable reg_eqb : reg -> reg -> bool.
-  Variable reg_size : reg -> nat.
+  Variable reg_size : reg -> nat. (* Size in bits *)
 
-  (* `(a,b)` represents all the bits between `a` and `b`, including `a` but not
-  including `b`. *)
-  Definition reg_slc : Type := reg * (nat * nat).
-  Definition reg_slc_eqb (s1 s2 : reg_slc) : bool :=
-    let '(r1, (a1, b1)) := s1 in
-    let '(r2, (a2, b2)) := s2 in
-    reg_eqb r1 r2 && Nat.eqb a1 a2 && Nat.eqb b1 b2.
-
-  Definition reg_val : Type := N.
-
+  (* TODO: The Arm ARM pseudocode passes this kind of attributes when doing the
+  actuall memory access (e.g., AArch64.MemSingle), but the concurrency model
+  needs this information earlier. *)
   Variable mem_read_kind : Type.
   Variable mem_write_kind : Type.
 
   Variable ast : Type.
+End InsSemCoreSig.
 
-  Variable regs_from_ast
-    : ast -> (list (reg_slc * bool) * list reg_slc).
+Module InsSemCoreFacts (Core : InsSemCoreSig).
+  (* `(a,b)` represents all the bits between `a` and `b`, including `a` but not
+  including `b`. *)
+  Definition reg_slc : Type := Core.reg * (nat * nat).
+  Definition reg_slc_eqb (s1 s2 : reg_slc) : bool :=
+    let '(r1, (a1, b1)) := s1 in
+    let '(r2, (a2, b2)) := s2 in
+    Core.reg_eqb r1 r2 && Nat.eqb a1 a2 && Nat.eqb b1 b2.
+
+  Definition reg_val := N.
+  Definition reg_val_add := N.add.
+  Definition reg_val_of_nat (n : nat) : reg_val := N.of_nat n.
+  Definition nat_of_reg_val (n : reg_val) : nat := N.to_nat n.
+  Fixpoint reg_val_of_mem_slc_val (v : mem_slc_val) : reg_val :=
+    match v with
+    | nil => 0%N
+    | h::tl => ((N.of_nat h) + (N.shiftl (reg_val_of_mem_slc_val tl) 8))%N
+    end.
+  Fixpoint mem_slc_val_of_reg_val (n : reg_val) (size : nat)
+    : mem_slc_val :=
+    let byte_mask := ((2 ^ 8) - 1)%N in
+    match size with
+    | O => nil
+    | S size =>
+      N.to_nat (N.land byte_mask n) :: mem_slc_val_of_reg_val (N.shiftr n 8) size
+    end.
+  Definition mem_loc_of_reg_val (n : reg_val) : mem_loc := N.to_nat n.
+  Definition reg_val_of_mem_loc (loc : mem_loc) : reg_val := N.of_nat loc.
+
+  Record info :=
+    mk_info { input_regs : list (reg_slc * bool);
+              output_regs : list reg_slc }.
 
   Variant regE : Type -> Type :=
   | RegERead : reg_slc -> regE reg_val
@@ -183,33 +207,32 @@ Module Type InstructionSemanticsSig.
   | MemEWriteVal : mem_slc_val -> memE unit.
 
   Definition E := (regE +' memE).
+End InsSemCoreFacts.
 
+Module Type InsSemSig (Core : InsSemCoreSig).
+  Include Core.
+  Include InsSemCoreFacts Core.
+
+  Variable info_of_ast : ast -> info.
   Variable denote : ktree E ast unit.
-
-  Definition machine_code : Type := nat.
-  Variable decode : machine_code -> ast.
-
-  Definition pc_t : Type := nat.
-  Variable next_pc : pc_t -> ast -> list pc_t.
-End InstructionSemanticsSig.
+  Variable decode : mem_slc_val -> option ast.
+  (* FIXME: the return type has to also express branches that have no concrete
+  value yet. *)
+  Variable next_pc : mem_loc -> ast -> list mem_loc.
+End InsSemSig.
 
 Module Type ArcSig.
-  Declare Module InsSem : InstructionSemanticsSig.
+  Declare Module InsSemCore : InsSemCoreSig.
+  Declare Module InsSem : InsSemSig InsSemCore.
 
   (** InsSem-Thread interface *)
 
-  Variable instruction_kind : Type.
-  Variable instruction_kind_from_ast : InsSem.ast -> instruction_kind.
+  Variable mem_read_kind_of_ast : InsSem.ast -> InsSem.mem_read_kind.
+  Variable mem_write_kind_of_ast : InsSem.ast -> InsSem.mem_write_kind.
 
-  Variable mem_read_kind_of_ins_kind : instruction_kind -> InsSem.mem_read_kind.
-  Variable mem_write_kind_of_ins_kind : instruction_kind -> InsSem.mem_read_kind.
-
-  Variable split_load_mem_slc : instruction_kind -> mem_slc -> list mem_slc.
-  Variable split_store_mem_slc_val : instruction_kind -> mem_slc -> mem_slc_val ->
+  Variable split_load_mem_slc : InsSem.ast -> mem_slc -> list mem_slc.
+  Variable split_store_mem_slc_val : InsSem.ast -> mem_slc -> mem_slc_val ->
                                      list (mem_slc * mem_slc_val).
-
-  Definition mem_loc_of_pc (pc : InsSem.pc_t) : mem_loc := pc.
-  Definition pc_of_mem_loc (loc : mem_loc) : InsSem.pc_t := loc.
 
   (** Thread-Storage interface *)
 
@@ -222,7 +245,7 @@ Module Type ArcSig.
     mk_mem_write { write_id : mem_write_id_t;
                    write_footprint : mem_slc;
                    write_val : mem_slc_val;
-                   write_kind : InsSem.mem_read_kind }.
+                   write_kind : InsSem.mem_write_kind }.
 
   Definition mem_reads_from : Type := list ((thread_id_t * instruction_id_t * mem_write_id_t) *
                                             (mem_slc * mem_slc_val)).
@@ -234,7 +257,6 @@ Module Type ArcSig.
 End ArcSig.
 
 Module Type ThreadSig (Arc : ArcSig).
-
   Variable state : Type.
   Variable initial_state : instruction_id_t -> mem_loc -> state.
 
