@@ -73,7 +73,8 @@ Module Core <: InsSemCoreSig.
   Definition ast := _ast.
 End Core.
 
-Module Make : InsSemSig Core.
+Module Make : InsSemSig.
+  Module Core := Core.
   Include Core.
   Include InsSemCoreFacts Core.
 

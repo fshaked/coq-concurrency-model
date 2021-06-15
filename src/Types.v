@@ -209,7 +209,8 @@ Module InsSemCoreFacts (Core : InsSemCoreSig).
   Definition E := (regE +' memE).
 End InsSemCoreFacts.
 
-Module Type InsSemSig (Core : InsSemCoreSig).
+Module Type InsSemSig.
+  Declare Module Core : InsSemCoreSig.
   Include Core.
   Include InsSemCoreFacts Core.
 
@@ -222,8 +223,7 @@ Module Type InsSemSig (Core : InsSemCoreSig).
 End InsSemSig.
 
 Module Type ArcSig.
-  Declare Module InsSemCore : InsSemCoreSig.
-  Declare Module InsSem : InsSemSig InsSemCore.
+  Declare Module InsSem : InsSemSig.
 
   (** InsSem-Thread interface *)
 
