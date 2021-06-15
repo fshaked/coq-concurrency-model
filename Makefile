@@ -27,3 +27,4 @@ clean:
 	find . -name "*.v.d" -type f -delete
 	find . -name "*.vo" -type f -delete
 	find . -name "*.glob" -type f -delete
+	find . -name ".*.aux" -type f -delete
