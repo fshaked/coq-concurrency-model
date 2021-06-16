@@ -23,7 +23,7 @@ Typeclasses eauto := 5.
 From RecordUpdate Require Import RecordSet.
 Import RecordSetNotations.
 
-Require Import Utils Types System
+Require Utils Types System
         SimpleA64InsSem FlatThread FlatStorage.
 
 Module Arc := SimpleA64InsSem.Armv8.
@@ -31,3 +31,7 @@ Module Thread := FlatThread.Make Arc.
 Module Storage := FlatStorage.Make Arc.
 
 Module Model := System.Make Arc Thread Storage.
+
+(* Compute Model.run [] []. *)
+             (* (mem : list (thread_id_t * instruction_id_t * Arc.mem_write)) *)
+             (* (entry_locs : list mem_loc) := *)

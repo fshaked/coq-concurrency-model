@@ -79,27 +79,56 @@ Module Make (Arc : ArcSig)
   Definition handle_thread_E {E}
              `{exceptE disabled -< E}
              `{exceptE error -< E}
-    : wrapE Thread.E (instruction_id_t * thread_id_t) ~>
-            stateT state (itree E) :=
-    fun _ e s =>
+             `{stateE state -< E}
+    : wrapE Thread.E (instruction_id_t * thread_id_t) ~> itree E :=
+    fun _ e =>
       let '(Wrap e (iid, tid)) := e in
-      thr_state <- try_unwrap_option (List.nth_error s.(threads) tid)
-                                    "get_thread_state: thread is missing"
+      s <- get
+      ;; thr_state <- try_unwrap_option (List.nth_error s.(threads) tid)
+                                       "get_thread_state: thread is missing"
       ;; let it : itree _ (Thread.state * _) := Thread.handle_E iid _ e thr_state in
          '(sto_state, (thr_state, ans)) <- interp_storage iid tid _ it s.(storage)
       ;; let ts := list_replace_nth tid thr_state s.(threads) in
-         ret (s <| storage := sto_state |> <| threads := ts |>, ans).
+         put (s <| storage := sto_state |> <| threads := ts |>)
+      ;; ret ans.
+
+  Definition handle_disabled {E}
+    : exceptE disabled ~> itree E :=
+    fun _ e =>
+      let '(Throw Disabled) := e in
+      (* FIXME: *)
+      ITree.spin.
+
+  Definition handle_error {E}
+    : exceptE error ~> itree E :=
+    fun _ e =>
+      let '(Throw (Error msg)) := e in
+      (* FIXME: *)
+      ITree.spin.
 
   Definition interp_system {E}
-             `{exceptE disabled -< E}
-             `{exceptE error -< E}
-    : itree (wrapE Thread.E (instruction_id_t * thread_id_t) +' E) ~>
+    : itree (wrapE Thread.E (instruction_id_t * thread_id_t)
+             +' exceptE disabled
+             +' exceptE error
+             +' E) ~>
             stateT state (itree E) :=
-    interp_state (case_ handle_thread_E pure_state).
+    fun _ it =>
+      let it := interp (bimap  handle_thread_E
+                               (id_ (exceptE disabled +' exceptE error +' E)))
+                       it in
+      let it : itree (stateE state +' exceptE disabled +' exceptE error +' E) _ :=
+          resum_it _ it in
+      let it : itree (stateE state +' E) _ :=
+          interp (bimap (id_ (stateE state))
+                        (case_ handle_disabled
+                               (case_ handle_error (id_ E)))) it in
+      run_state it.
 
-  Definition run_system
+  Definition run {E}
+             `{nondetFinE -< E}
              (mem : list (thread_id_t * instruction_id_t * Arc.mem_write))
-             (entry_locs : list mem_loc) :=
+             (entry_locs : list mem_loc)
+    : itree E (state * unit) :=
     let tids := List.seq 0 (List.length entry_locs) in
     interp_system _ (denote tids) (initial_state mem entry_locs).
 End Make.
