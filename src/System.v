@@ -69,28 +69,12 @@ Module Make (Arc : ArcSig)
     {| storage := Storage.initial_state mem;
        threads := List.map (Thread.initial_state 0) entry_locs |}.
 
-  Definition interp_storage {E}
-             `{exceptE disabled -< E}
-             `{exceptE error -< E}
-             (iid : instruction_id_t) (tid : thread_id_t)
-    : itree (Arc.storageE +' E) ~> stateT Storage.state (itree E) :=
-    interp_state (case_ (Storage.handle_storageE iid tid) pure_state).
-
-  Definition handle_thread_E {E}
-             `{exceptE disabled -< E}
-             `{exceptE error -< E}
-             `{stateE state -< E}
-    : wrapE Thread.E (instruction_id_t * thread_id_t) ~> itree E :=
-    fun _ e =>
-      let '(Wrap e (iid, tid)) := e in
-      s <- get
-      ;; thr_state <- try_unwrap_option (List.nth_error s.(threads) tid)
-                                       "get_thread_state: thread is missing"
-      ;; let it : itree _ (Thread.state * _) := Thread.handle_E iid _ e thr_state in
-         '(sto_state, (thr_state, ans)) <- interp_storage iid tid _ it s.(storage)
-      ;; let ts := list_replace_nth tid thr_state s.(threads) in
-         put (s <| storage := sto_state |> <| threads := ts |>)
-      ;; ret ans.
+  (* Definition interp_storage {E} *)
+  (*            `{exceptE disabled -< E} *)
+  (*            `{exceptE error -< E} *)
+  (*            (iid : instruction_id_t) (tid : thread_id_t) *)
+  (*   : itree (Arc.storageE +' E) ~> stateT Storage.state (itree E) := *)
+  (*   interp_state (case_ (Storage.handle_storageE iid tid) pure_state). *)
 
   Definition handle_disabled {E}
     : exceptE disabled ~> itree E :=
@@ -105,6 +89,56 @@ Module Make (Arc : ArcSig)
       let '(Throw (Error msg)) := e in
       (* FIXME: *)
       ITree.spin.
+
+  Definition handle_thread_E {E}
+             `{exceptE disabled -< E}
+             `{exceptE error -< E}
+             `{stateE state -< E}
+    : wrapE Thread.E (instruction_id_t * thread_id_t) ~> itree (E) :=
+    fun _ e =>
+      let '(Wrap e' (iid, tid)) := e in
+      let it : itree (Arc.storageE
+                      +' stateE Thread.state
+                      +' exceptE disabled
+                      +' exceptE error) _ :=
+          Thread.handle_E iid _ e' in
+      let it : itree (stateE Thread.state
+                      +' stateE Storage.state
+                      +' exceptE disabled
+                      +' exceptE error) _ :=
+          (* TODO: is there a better way to do this? I tired using bimap/swap/assoc_r/etc.,
+             but couldn't get it to work (also, it didn't look much better). *)
+          interp
+            (case_ (cat (Storage.handle_storageE iid tid)
+                        (case_ (cat inl_ inr_) (* stateE Storage.state *)
+                               (case_ (cat inl_ (cat inr_ inr_)) (* exceptE disabled *)
+                                      (cat inr_ (cat inr_ inr_))))) (* exceptE error *)
+                   (case_ inl_ (* stateE Thread.state *)
+                          (case_ (cat inl_ (cat inr_ inr_)) (* exceptE disabled *)
+                                 (cat inr_ (cat inr_ inr_))))) (* exceptE error *)
+          (* interp *)
+          (*   (case_ *)
+          (*      (cat inl_ (cat inr_ inr_)) (* exceptE disabled *) *)
+          (*      (case_ *)
+          (*         (cat inr_ (cat inr_ inr_)) (* exceptE error *) *)
+          (*         (case_ *)
+          (*            (cat (Storage.handle_storageE iid tid) *)
+          (*                 (case_ *)
+          (*                    (cat inl_ inr_) (* stateE Storage.state *) *)
+          (*                    (case_ *)
+          (*                       (cat inl_ (cat inr_ inr_)) (* exceptE disabled *) *)
+          (*                       (cat inr_ (cat inr_ inr_))))) (* exceptE error *) *)
+          (*            inl_))) (* stateE Thread.state *) *)
+            it in
+      s <- get
+      ;; thr_state <- try_unwrap_option (List.nth_error s.(threads) tid)
+                                       "get_thread_state: thread is missing"
+      ;; let it := run_state it (thr_state : Thread.state) in
+         let it := run_state it s.(storage) in
+         '(sto_state, (thr_state, ans)) <- resum_it' _ it
+      ;; let ts := list_replace_nth tid thr_state s.(threads) in
+         put (s <| storage := sto_state |> <| threads := ts |>)
+      ;; ret ans.
 
   Definition interp_system {E}
     : itree (wrapE Thread.E (instruction_id_t * thread_id_t)

@@ -77,14 +77,19 @@ Module Make (Arc : ArcSig) : StorageSig Arc.
     Ret (s <| mem := (tid, iid, w)::s.(mem) |>, tt).
 
   Definition handle_storageE {E}
-             `{exceptE error -< E}
+             `{stateE state -< E}
              `{exceptE disabled -< E}
+             `{exceptE error -< E}
              (iid : instruction_id_t) (tid : thread_id_t)
-    : Arc.storageE ~> stateT state (itree E) :=
-    fun _ e s =>
-      match e with
+    : Arc.storageE ~> itree E :=
+    fun _ e =>
+      s <- get
+      ;; '(s, a) <-
+      match e in Arc._storageE A return itree _ (state * A) with
       | Arc.StEReadInstruction pc => try_read_instruction pc s
       | Arc.StERead read uslcs => try_read read uslcs s
       | Arc.StEWrite write => try_write tid iid write s
-      end.
+      end
+      ;; 'tt <- put s
+      ;; ret a.
 End Make.

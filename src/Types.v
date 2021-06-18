@@ -277,20 +277,22 @@ Module Type ThreadSig (Arc : ArcSig).
   Arguments denote {F HasWrapThreadIID HasNondetFin}.
 
   Variable handle_E : forall (F : Type -> Type)
-                        `{HasExceptError: exceptE error -< F}
+                        `{HasStorage: Arc.storageE -< F}
+                        `{HasState: stateE state -< F}
                         `{HasExceptDisabled: exceptE disabled -< F}
-                        `{HasStorage: Arc.storageE -< F},
-      instruction_id_t -> E ~> stateT state (itree F).
-  Arguments handle_E {F HasExceptError HasExceptDisabled HasStorage}.
+                        `{HasExceptError: exceptE error -< F},
+      instruction_id_t -> E ~> itree F.
+  Arguments handle_E {F HasStorage HasState HasExceptDisabled HasExceptError}.
 End ThreadSig.
 
 Module Type StorageSig (Arc : ArcSig).
   Variable state : Type.
   Variable initial_state : list (thread_id_t * instruction_id_t * Arc.mem_write) -> state.
   Variable handle_storageE : forall (E : Type -> Type)
-                               `{HasExceptError: exceptE error -< E}
-                               `{HasExceptDisabled: exceptE disabled -< E},
+                               `{HasState: stateE state -< E}
+                               `{HasExceptDisabled: exceptE disabled -< E}
+                               `{HasExceptError: exceptE error -< E},
                              instruction_id_t -> thread_id_t ->
-                             Arc.storageE ~> stateT state (itree E).
-  Arguments handle_storageE {E HasExceptError HasExceptDisabled}.
+                             Arc.storageE ~> itree E.
+  Arguments handle_storageE {E HasState HasExceptDisabled HasExceptError}.
 End StorageSig.

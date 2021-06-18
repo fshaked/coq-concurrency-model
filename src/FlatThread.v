@@ -503,13 +503,16 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
     ret (s, tt).
 
   Definition handle_E {F}
-             `{exceptE error -< F}
-             `{exceptE disabled -< F}
              `{Arc.storageE -< F}
+             `{stateE state -< F}
+             `{exceptE disabled -< F}
+             `{exceptE error -< F}
              (iid : instruction_id_t)
-    : E ~> stateT state (itree F) :=
-    fun _ e s =>
-      match e with
+    : E ~> itree F :=
+    fun _ e =>
+      s <- get
+      ;; '(s, a) <-
+      match e in _E A return itree _ (state * A) with
       | ThEFetchAndDecodeOrRestart => try_fetch_and_decode_or_restart iid s
       | ThEFinishIns => try_finish_instruction iid s
       | ThERegAccess _ e => handle_reg_access iid _ e s
@@ -524,5 +527,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
       | ThECommitStoreInstruction => try_commit_store_instruction iid s
       | ThEPropagateStoreOp wid => try_propagate_store_op wid iid s
       | ThECompleteStoreOps => try_complete_store_ops iid s
-      end.
+      end
+      ;; 'tt <- put s
+      ;; ret a.
 End Make.
