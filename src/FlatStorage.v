@@ -48,33 +48,38 @@ Module Make (Arc : ArcSig) : StorageSig Arc.
     end.
 
   Definition try_read_instruction {E}
+             `{stateE state -< E}
              (* `{exceptE disabled -< E} *)
              `{exceptE error -< E}
-             (loc : mem_loc) (s : state)
-    : itree E (state * (mem_slc * Arc.mem_reads_from)) :=
+             (loc : mem_loc)
+    : itree E (mem_slc * Arc.mem_reads_from) :=
     (* TODO: don't assume all instructions are 4 bytes *)
     let ins_size := 4 in
     let slc := {| location := loc; size := ins_size |} in
-    rf <- try_unwrap_option (get_slcs_val [slc] s)
-                           "try_read_instruction: no value in memory"
-    ;; ret (s, (slc, rf)).
+    s <- get
+    ;; rf <- try_unwrap_option (get_slcs_val [slc] s)
+                              "try_read_instruction: no value in memory"
+    ;; ret (slc, rf).
 
   Definition try_read {E}
+             `{stateE state -< E}
              (* `{exceptE disabled -< E} *)
              `{exceptE error -< E}
-             (r : Arc.mem_read) (slcs : list mem_slc) (s : state)
-    : itree E (state * Arc.mem_reads_from) :=
-    rf <- try_unwrap_option (get_slcs_val slcs s)
-                           "try_read: no value in memory"
-    ;; ret (s, rf).
+             (r : Arc.mem_read) (slcs : list mem_slc)
+    : itree E Arc.mem_reads_from :=
+    s <- get
+    ;; rf <- try_unwrap_option (get_slcs_val slcs s)
+                              "try_read: no value in memory"
+    ;; ret rf.
 
   Definition try_write {E}
+             `{stateE state -< E}
              (* `{exceptE disabled -< E} *)
              (* `{exceptE error -< E} *)
-             (tid : thread_id_t) (iid : instruction_id_t)
-             (w : Arc.mem_write) (s : state)
-    : itree E (state * unit) :=
-    Ret (s <| mem := (tid, iid, w)::s.(mem) |>, tt).
+             (tid : thread_id_t) (iid : instruction_id_t) (w : Arc.mem_write)
+    : itree E unit :=
+    s <- get
+    ;; put (s <| mem := (tid, iid, w)::s.(mem) |>).
 
   Definition handle_storageE {E}
              `{stateE state -< E}
@@ -83,13 +88,9 @@ Module Make (Arc : ArcSig) : StorageSig Arc.
              (iid : instruction_id_t) (tid : thread_id_t)
     : Arc.storageE ~> itree E :=
     fun _ e =>
-      s <- get
-      ;; '(s, a) <-
-      match e in Arc._storageE A return itree _ (state * A) with
-      | Arc.StEReadInstruction pc => try_read_instruction pc s
-      | Arc.StERead read uslcs => try_read read uslcs s
-      | Arc.StEWrite write => try_write tid iid write s
-      end
-      ;; 'tt <- put s
-      ;; ret a.
+      match e with
+      | Arc.StEReadInstruction pc => try_read_instruction pc
+      | Arc.StERead read uslcs => try_read read uslcs
+      | Arc.StEWrite write => try_write tid iid write
+      end.
 End Make.

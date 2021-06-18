@@ -305,202 +305,204 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
     in
     s <| instruction_tree := helper s.(instruction_tree) |>.
 
-  Definition try_fetch_and_decode_or_restart {F} `{Arc.storageE -< F} `{exceptE error -< F}
-             (iid : instruction_id_t) (s : state)
-    : itree F (state * (list instruction_id_t * Arc.InsSem.ast)) :=
-    '(_, (_, loc, ins), _) <- get_instruction_state iid s
-    ;; match ins with
-       | None =>
-         '(slc, rf) <- trigger (Arc.StEReadInstruction loc)
-         ;; val <- try_unwrap_option (mem_slc_val_of_reads_from slc rf)
-                                    "try_fetch_and_decode_or_restart: some bytes are missing from memory read of instruction."
-         ;; ast <- try_unwrap_option (Arc.InsSem.decode val)
-                                    "try_fetch_and_decode_or_restart: decoding of instruction failed"
-         ;; let ins := initial_decoded_instruction_state ast in
-            let next_pcs := Arc.InsSem.next_pc loc ast in
-            let iids := List.seq s.(next_iid) (List.length next_pcs) in
-            let subts := List.map (fun '(iid, pc) => Tree (iid, pc, None) [])
-                                  (List.combine iids next_pcs) in
-            let s := s <| next_iid := s.(next_iid) + (List.length next_pcs) |> in
-            let s := update_dec_instruction_state_and_subts iid ins subts s in
-            ret (s, (iids, ast))
-       | Some ins =>
-         (* Nothing to do, the instruction-state has already been restarted. *)
-         ret (s, ([], ins.(ins_ast)))
-       end.
+  Section Handle_instruction.
+    Context {F : Type -> Type}.
+    Context `{Arc.storageE -< F}.
+    Context `{stateE state -< F}.
+    Context `{exceptE error -< F}.
 
-  Definition try_finish_instruction {F} `{exceptE error -< F}
-             (iid : instruction_id_t) (s : state)
-    : itree F (state * unit) :=
-    (* FIXME: check finish condition *)
-    ret (s, tt).
+    Variable iid : instruction_id_t.
 
-  Definition try_read_reg_slc {F}
-             (rslc : Arc.InsSem.reg_slc) (iid : instruction_id_t) (s : state)
-    : itree F (state * Arc.InsSem.reg_val) :=
-    ITree.spin.
+    Definition try_fetch_and_decode_or_restart
+      : itree F (list instruction_id_t * Arc.InsSem.ast) :=
+      s <- get
+      ;; '(_, (_, loc, ins), _) <- get_instruction_state iid s
+      ;; match ins with
+         | None =>
+           '(slc, rf) <- trigger (Arc.StEReadInstruction loc)
+           ;; val <- try_unwrap_option (mem_slc_val_of_reads_from slc rf)
+                                      "try_fetch_and_decode_or_restart: some bytes are missing from memory read of instruction."
+           ;; ast <- try_unwrap_option (Arc.InsSem.decode val)
+                                      "try_fetch_and_decode_or_restart: decoding of instruction failed"
+           ;; let ins := initial_decoded_instruction_state ast in
+              let next_pcs := Arc.InsSem.next_pc loc ast in
+              let iids := List.seq s.(next_iid) (List.length next_pcs) in
+              let subts := List.map (fun '(iid, pc) => Tree (iid, pc, None) [])
+                                    (List.combine iids next_pcs) in
+              let s := s <| next_iid := s.(next_iid) + (List.length next_pcs) |> in
+              let s := update_dec_instruction_state_and_subts iid ins subts s in
+              'tt <- put s
+           ;; ret (iids, ast)
+         | Some ins =>
+           (* Nothing to do, the instruction-state has already been restarted. *)
+           ret ([], ins.(ins_ast))
+         end.
 
-  Definition try_write_reg_slc {F} `{exceptE error -< F}
-             (rslc : Arc.InsSem.reg_slc) (val : Arc.InsSem.reg_val)
-             (iid : instruction_id_t) (s : state)
-    : itree F (state * unit) :=
-    '(_, ins, _) <- get_dec_instruction_state iid s
-    ;; let reg_writes :=
-           List.map
-             (fun rws =>
-                if Arc.InsSem.reg_slc_eqb rws.(rws_slc) rslc then
-                  let rdf := List.concat (List.map rrs_reads_from ins.(ins_reg_reads)) in
-                  let mdf := match ins.(ins_mem_reads) with Some _ => true | _ => false end in
-                  mk_reg_write_state rslc (Some val) rdf mdf
-                else rws)
-             ins.(ins_reg_writes) in
-       let ins := ins <| ins_reg_writes := reg_writes |> in
-       let s := update_dec_instruction_state iid ins s in
-       ret (s, tt).
-
-  Definition handle_reg_access {F} `{exceptE error -< F}
-             (iid : instruction_id_t)
-    : Arc.InsSem.regE ~> stateT state (itree F) :=
-    fun _ e s =>
-      match e with
-      | Arc.InsSem.RegERead rslc => try_read_reg_slc rslc iid s
-      | Arc.InsSem.RegEWrite rslc rval => try_write_reg_slc rslc rval iid s
-      end.
-
-  Definition try_init_mem_load_ops {F} `{exceptE error -< F}
-             (slc : mem_slc) (iid : instruction_id_t) (s : state)
-    : itree F (state * list mem_read_id_t) :=
-    '(_, ins, _) <- get_dec_instruction_state iid s
-    ;; let sub_slcs := Arc.split_load_mem_slc ins.(ins_ast) slc in
-       let kind := Arc.mem_read_kind_of_ast ins.(ins_ast) in
-       let rids := List.seq 0 (List.length sub_slcs) in
-       let reads := List.map
-                      (fun '(rid, slc) => {| Arc.read_id := rid;
-                                          Arc.read_footprint := slc;
-                                          Arc.read_kind := kind |})
-                      (List.combine rids sub_slcs) in
-       let rs := {| rs_footprint := slc;
-                    rs_reads := reads;
-                    rs_unsat_slcs := List.map (fun r => [r.(Arc.read_footprint)]) reads;
-                    rs_reads_from := List.map (fun _ => nil) reads |} in
-       let ins := ins <| ins_mem_reads := Some rs |> in
-       let s := update_dec_instruction_state iid ins s in
-       ret (s, rids).
+    Definition try_finish_instruction : itree F unit :=
+      (* FIXME: check finish condition *)
+      let iid := iid in
+      ret tt.
 
 
-  Definition try_sat_mem_load_op_forwarding {F} `{exceptE error -< F} `{exceptE disabled -< F}
-             (rid : mem_read_id_t) (iid : instruction_id_t) (s : state)
-    : itree F (state * (bool * list instruction_id_t)) :=
-    (* FIXME: *)
-    ITree.spin.
+    Definition try_read_reg_slc (rslc : Arc.InsSem.reg_slc)
+      : itree F Arc.InsSem.reg_val :=
+      (* FIXME: *)
+      ITree.spin.
 
-  Definition try_sat_mem_load_op_from_storage {F}
-             `{exceptE error -< F} `{exceptE disabled -< F}
-             `{Arc.storageE -< F}
-             (rid : mem_read_id_t) (iid : instruction_id_t) (s : state)
-    : itree F (state * list instruction_id_t) :=
-    '(_, ins, subts) <- get_dec_instruction_state iid s
-    ;; rs <- try_unwrap_option ins.(ins_mem_reads)
-                                    "try_sat_mem_load_op_from_storage: no mem reads."
-    ;; unsat_slcs <- try_unwrap_option (List.nth_error rs.(rs_unsat_slcs) rid)
-                                      "try_sat_mem_load_op_from_storage: missing rid."
-    (* ;; guard (isTrue (unsat_slcs <> [])) *)
-    ;; rr <- try_unwrap_option (List.nth_error rs.(rs_reads) rid)
-                              "try_sat_mem_load_op_from_storage: missing rid"
-    ;; rf_forward <- try_unwrap_option (List.nth_error rs.(rs_reads_from) rid)
-                                      "try_sat_mem_load_op_from_storage: missing rid."
-    ;; rf_storage <- trigger (Arc.StERead rr unsat_slcs)
-    ;; let rs := rs <| rs_unsat_slcs := list_replace_nth rid [] rs.(rs_unsat_slcs) |>
-                    <| rs_reads_from := list_replace_nth rid (rf_forward ++ rf_storage) rs.(rs_reads_from) |> in
-       let ins := ins <| ins_mem_reads := Some rs |> in
-       (* FIXME: compute iids that need to be restarted *)
-       let restarts := [] in
-       (* FIXME: let subts := restart_instructions restarts subts in *)
-       let s := update_dec_instruction_state_and_subts iid ins subts s in
-       ret (s, restarts).
+    Definition try_write_reg_slc (rslc : Arc.InsSem.reg_slc) (val : Arc.InsSem.reg_val)
+      : itree F unit :=
+      s <- get
+      ;; '(_, ins, _) <- get_dec_instruction_state iid s
+      ;; let reg_writes :=
+             List.map
+               (fun rws =>
+                  if Arc.InsSem.reg_slc_eqb rws.(rws_slc) rslc then
+                    let rdf := List.concat (List.map rrs_reads_from ins.(ins_reg_reads)) in
+                    let mdf := match ins.(ins_mem_reads) with Some _ => true | _ => false end in
+                    mk_reg_write_state rslc (Some val) rdf mdf
+                  else rws)
+               ins.(ins_reg_writes) in
+         let ins := ins <| ins_reg_writes := reg_writes |> in
+         let s := update_dec_instruction_state iid ins s in
+         put s.
 
-  Definition try_complete_load_ops {F} `{exceptE error -< F} `{exceptE disabled -< F}
-             (iid : instruction_id_t) (s : state)
-    : itree F (state * mem_slc_val) :=
-    '(_, ins, _) <- get_dec_instruction_state iid s
-    ;; rs <- try_unwrap_option ins.(ins_mem_reads)
-                                    "try_complete_load_ops: no mem reads."
-    (* ;; guard (isTrue (Forall (fun u => u = []) rs.(rs_unsat_slcs))) *)
-    ;; val <- try_unwrap_option
-               (mem_slc_val_of_reads_from
-                  rs.(rs_footprint)
-                       (List.concat rs.(rs_reads_from)))
-               "try_complete_load_ops: some bytes are missing from memory read."
-    ;; ret (s, val).
+    Definition handle_reg_access : Arc.InsSem.regE ~> itree F :=
+      fun _ e =>
+        match e with
+        | Arc.InsSem.RegERead rslc => try_read_reg_slc rslc
+        | Arc.InsSem.RegEWrite rslc rval => try_write_reg_slc rslc rval
+        end.
 
-  Definition try_init_mem_store_op_fps {F} `{exceptE error -< F} `{exceptE disabled -< F}
-             (slc : mem_slc) (iid : instruction_id_t) (s : state)
-    : itree F (state * unit) :=
-    '(_, ins, _) <- get_dec_instruction_state iid s
-    ;; let ws := {| ws_footprint := slc;
-                    ws_writes := [];
-                    ws_has_propagated := [] |} in
-       let ins := ins <| ins_mem_writes := Some ws |> in
-       let s := update_dec_instruction_state iid ins s in
-       ret (s, tt).
+    Definition try_init_mem_load_ops (slc : mem_slc)
+      : itree F (list mem_read_id_t) :=
+      s <- get
+      ;; '(_, ins, _) <- get_dec_instruction_state iid s
+      ;; let sub_slcs := Arc.split_load_mem_slc ins.(ins_ast) slc in
+         let kind := Arc.mem_read_kind_of_ast ins.(ins_ast) in
+         let rids := List.seq 0 (List.length sub_slcs) in
+         let reads := List.map
+                        (fun '(rid, slc) => {| Arc.read_id := rid;
+                                            Arc.read_footprint := slc;
+                                            Arc.read_kind := kind |})
+                        (List.combine rids sub_slcs) in
+         let rs := {| rs_footprint := slc;
+                      rs_reads := reads;
+                      rs_unsat_slcs := List.map (fun r => [r.(Arc.read_footprint)]) reads;
+                      rs_reads_from := List.map (fun _ => nil) reads |} in
+         let ins := ins <| ins_mem_reads := Some rs |> in
+         let s := update_dec_instruction_state iid ins s in
+         'tt <- put s
+      ;; ret rids.
 
-  Definition try_insta_mem_store_op_vals {F} `{exceptE error -< F} `{exceptE disabled -< F}
-             (val : mem_slc_val) (iid : instruction_id_t) (s : state)
-    : itree F (state * unit) :=
-    '(_, ins, _) <- get_dec_instruction_state iid s
-    ;; ws <- try_unwrap_option ins.(ins_mem_writes)
-                                    "try_insta_mem_store_op_vals: no mem writes"
-    ;; let sub_slcs := Arc.split_store_mem_slc_val ins.(ins_ast) ws.(ws_footprint) val in
-       let kind := Arc.mem_write_kind_of_ast ins.(ins_ast) in
-       let wids := List.seq 0 (List.length sub_slcs) in
-       let writes := List.map
-                      (fun '(wid, (slc, val)) => {| Arc.write_id := wid;
-                                                 Arc.write_footprint := slc;
-                                                 Arc.write_val := val;
-                                                 Arc.write_kind := kind |})
-                      (List.combine wids sub_slcs) in
-       let ws := ws <| ws_writes := writes |>
-                    <| ws_has_propagated := List.map (fun _ => false) writes |>in
-       let ins := ins <| ins_mem_writes := Some ws |> in
-       let s := update_dec_instruction_state iid ins s in
-       ret (s, tt).
 
-  Definition try_commit_store_instruction {F} `{exceptE error -< F} `{exceptE disabled -< F}
-             (iid : instruction_id_t) (s : state)
-    : itree F (state * list mem_write_id_t) :=
-    '(_, ins, _) <- get_dec_instruction_state iid s
-    ;; ws <- try_unwrap_option ins.(ins_mem_writes)
-                                    "try_commit_store_instruction: no mem writes"
-    (* FIXME: check commit-store condition *)
-    ;; let wids := List.map Arc.write_id ws.(ws_writes) in
-    ret (s, wids).
+    Definition try_sat_mem_load_op_forwarding (rid : mem_read_id_t)
+      : itree F (bool * list instruction_id_t) :=
+      (* FIXME: *)
+      let iid := iid in
+      ITree.spin.
 
-  Definition try_propagate_store_op {F}
-             `{exceptE error -< F} `{exceptE disabled -< F}
-             `{Arc.storageE -< F}
-             (wid : mem_write_id_t) (iid : instruction_id_t) (s : state)
-    : itree F (state * list instruction_id_t) :=
-    '(_, ins, subts) <- get_dec_instruction_state iid s
-    ;; ws <- try_unwrap_option ins.(ins_mem_writes)
-                                    "try_propagate_store_op: no mem writes"
-    (* ;; guard (isTrue (List.nth_error ws.(ws_has_propagated) wid = Some false)) *)
-    ;; w <- try_unwrap_option (List.nth_error ws.(ws_writes) wid)
-                              "try_propagate_store_op: missing wid"
-    (* FIXME: check mem-write-propagation condition *)
-    ;; 'tt <- trigger (Arc.StEWrite w)
-    ;; let ws := ws <| ws_has_propagated := list_replace_nth wid true ws.(ws_has_propagated) |> in
-       let ins := ins <| ins_mem_writes := Some ws |> in
-       (* FIXME: compute iids that need to be restarted *)
-       let restarts := [] in
-       (* FIXME: let subts := restart_instructions restarts subts in *)
-       let s := update_dec_instruction_state_and_subts iid ins subts s in
-       ret (s, restarts).
+    Definition try_sat_mem_load_op_from_storage (rid : mem_read_id_t)
+      : itree F (list instruction_id_t) :=
+      s <- get
+      ;; '(_, ins, subts) <- get_dec_instruction_state iid s
+      ;; rs <- try_unwrap_option ins.(ins_mem_reads)
+                                      "try_sat_mem_load_op_from_storage: no mem reads."
+      ;; unsat_slcs <- try_unwrap_option (List.nth_error rs.(rs_unsat_slcs) rid)
+                                        "try_sat_mem_load_op_from_storage: missing rid."
+      (* ;; guard (isTrue (unsat_slcs <> [])) *)
+      ;; rr <- try_unwrap_option (List.nth_error rs.(rs_reads) rid)
+                                "try_sat_mem_load_op_from_storage: missing rid"
+      ;; rf_forward <- try_unwrap_option (List.nth_error rs.(rs_reads_from) rid)
+                                        "try_sat_mem_load_op_from_storage: missing rid."
+      ;; rf_storage <- trigger (Arc.StERead rr unsat_slcs)
+      ;; let rs := rs <| rs_unsat_slcs := list_replace_nth rid [] rs.(rs_unsat_slcs) |>
+                                                                                     <| rs_reads_from := list_replace_nth rid (rf_forward ++ rf_storage) rs.(rs_reads_from) |> in
+         let ins := ins <| ins_mem_reads := Some rs |> in
+         (* FIXME: compute iids that need to be restarted *)
+         let restarts := [] in
+         (* FIXME: let subts := restart_instructions restarts subts in *)
+         let s := update_dec_instruction_state_and_subts iid ins subts s in
+         'tt <- put s
+      ;; ret restarts.
 
-  Definition try_complete_store_ops {F} `{exceptE error -< F} `{exceptE disabled -< F}
-             (iid : instruction_id_t) (s : state)
-    : itree F (state * unit) :=
-    (* FIXME: is there anything we need to check here? *)
-    ret (s, tt).
+    Definition try_complete_load_ops : itree F mem_slc_val :=
+      s <- get
+      ;; '(_, ins, _) <- get_dec_instruction_state iid s
+      ;; rs <- try_unwrap_option ins.(ins_mem_reads)
+                                      "try_complete_load_ops: no mem reads."
+      (* ;; guard (isTrue (Forall (fun u => u = []) rs.(rs_unsat_slcs))) *)
+      ;; val <- try_unwrap_option
+                 (mem_slc_val_of_reads_from
+                    rs.(rs_footprint)
+                         (List.concat rs.(rs_reads_from)))
+                 "try_complete_load_ops: some bytes are missing from memory read."
+      ;; ret val.
+
+    Definition try_init_mem_store_op_fps (slc : mem_slc) : itree F unit :=
+      s <- get
+      ;; '(_, ins, _) <- get_dec_instruction_state iid s
+      ;; let ws := {| ws_footprint := slc;
+                      ws_writes := [];
+                      ws_has_propagated := [] |} in
+         let ins := ins <| ins_mem_writes := Some ws |> in
+         let s := update_dec_instruction_state iid ins s in
+         put s.
+
+    Definition try_insta_mem_store_op_vals (val : mem_slc_val) : itree F unit :=
+      s <- get
+      ;; '(_, ins, _) <- get_dec_instruction_state iid s
+      ;; ws <- try_unwrap_option ins.(ins_mem_writes)
+                                      "try_insta_mem_store_op_vals: no mem writes"
+      ;; let sub_slcs := Arc.split_store_mem_slc_val ins.(ins_ast) ws.(ws_footprint) val in
+         let kind := Arc.mem_write_kind_of_ast ins.(ins_ast) in
+         let wids := List.seq 0 (List.length sub_slcs) in
+         let writes := List.map
+                         (fun '(wid, (slc, val)) => {| Arc.write_id := wid;
+                                                    Arc.write_footprint := slc;
+                                                    Arc.write_val := val;
+                                                    Arc.write_kind := kind |})
+                         (List.combine wids sub_slcs) in
+         let ws := ws <| ws_writes := writes |>
+                                             <| ws_has_propagated := List.map (fun _ => false) writes |>in
+         let ins := ins <| ins_mem_writes := Some ws |> in
+         let s := update_dec_instruction_state iid ins s in
+         put s.
+
+    Definition try_commit_store_instruction : itree F (list mem_write_id_t) :=
+      s <- get
+      ;; '(_, ins, _) <- get_dec_instruction_state iid s
+      ;; ws <- try_unwrap_option ins.(ins_mem_writes)
+                                      "try_commit_store_instruction: no mem writes"
+      (* FIXME: check commit-store condition *)
+      ;; let wids := List.map Arc.write_id ws.(ws_writes) in
+         ret wids.
+
+    Definition try_propagate_store_op (wid : mem_write_id_t)
+      : itree F (list instruction_id_t) :=
+      s <- get
+      ;; '(_, ins, subts) <- get_dec_instruction_state iid s
+      ;; ws <- try_unwrap_option ins.(ins_mem_writes)
+                                      "try_propagate_store_op: no mem writes"
+      (* ;; guard (isTrue (List.nth_error ws.(ws_has_propagated) wid = Some false)) *)
+      ;; w <- try_unwrap_option (List.nth_error ws.(ws_writes) wid)
+                               "try_propagate_store_op: missing wid"
+      (* FIXME: check mem-write-propagation condition *)
+      ;; 'tt <- trigger (Arc.StEWrite w)
+      ;; let ws := ws <| ws_has_propagated := list_replace_nth wid true ws.(ws_has_propagated) |> in
+         let ins := ins <| ins_mem_writes := Some ws |> in
+         (* FIXME: compute iids that need to be restarted *)
+         let restarts := [] in
+         (* FIXME: let subts := restart_instructions restarts subts in *)
+         let s := update_dec_instruction_state_and_subts iid ins subts s in
+         'tt <- put s
+      ;; ret restarts.
+
+    Definition try_complete_store_ops : itree F unit :=
+      (* FIXME: is there anything we need to check here? *)
+      let iid := iid in
+      ret tt.
+
+  End Handle_instruction.
 
   Definition handle_E {F}
              `{Arc.storageE -< F}
@@ -510,24 +512,20 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
              (iid : instruction_id_t)
     : E ~> itree F :=
     fun _ e =>
-      s <- get
-      ;; '(s, a) <-
-      match e in _E A return itree _ (state * A) with
-      | ThEFetchAndDecodeOrRestart => try_fetch_and_decode_or_restart iid s
-      | ThEFinishIns => try_finish_instruction iid s
-      | ThERegAccess _ e => handle_reg_access iid _ e s
+      match e with
+      | ThEFetchAndDecodeOrRestart => try_fetch_and_decode_or_restart iid
+      | ThEFinishIns => try_finish_instruction iid
+      | ThERegAccess _ e => handle_reg_access iid _ e
       (* Load events *)
-      | ThEInitMemLoadOps slc => try_init_mem_load_ops slc iid s
-      | ThESatMemLoadOpForwarding rid => try_sat_mem_load_op_forwarding rid iid s
-      | ThESatMemLoadOpStorage rid => try_sat_mem_load_op_from_storage rid iid s
-      | ThECompleteLoadOps => try_complete_load_ops iid s
+      | ThEInitMemLoadOps slc => try_init_mem_load_ops iid slc
+      | ThESatMemLoadOpForwarding rid => try_sat_mem_load_op_forwarding iid rid
+      | ThESatMemLoadOpStorage rid => try_sat_mem_load_op_from_storage iid rid
+      | ThECompleteLoadOps => try_complete_load_ops iid
       (* Store events *)
-      | ThEInitMemStoreOpFps slc => try_init_mem_store_op_fps slc iid s
-      | ThEInstaMemStoreOpVals val => try_insta_mem_store_op_vals val iid s
-      | ThECommitStoreInstruction => try_commit_store_instruction iid s
-      | ThEPropagateStoreOp wid => try_propagate_store_op wid iid s
-      | ThECompleteStoreOps => try_complete_store_ops iid s
-      end
-      ;; 'tt <- put s
-      ;; ret a.
+      | ThEInitMemStoreOpFps slc => try_init_mem_store_op_fps iid slc
+      | ThEInstaMemStoreOpVals val => try_insta_mem_store_op_vals iid val
+      | ThECommitStoreInstruction => try_commit_store_instruction iid
+      | ThEPropagateStoreOp wid => try_propagate_store_op iid wid
+      | ThECompleteStoreOps => try_complete_store_ops iid
+      end.
 End Make.
