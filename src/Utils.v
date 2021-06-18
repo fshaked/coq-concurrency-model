@@ -34,8 +34,6 @@ Local Open Scope itree_scope.
    This bounds the instance search depth: *)
 Typeclasses eauto := 5.
 
-Notation " x '$>' f " := (f x)
-  (at level 40, left associativity, only parsing).
 
 Fixpoint list_replace_nth {T} (n : nat) (x : T) (l : list T) : list T :=
   match n, l with
@@ -99,19 +97,16 @@ Fixpoint list_nth {A} (l : list A) (f : Fin.t (List.length l)) : A :=
     end eq_refl
   end f.
 
-Fixpoint list_find_index {A} (l : list A) (p : A -> bool) {struct l}
-  : option (Fin.t (List.length l)).
-  destruct l.
-  - apply None.
-  - remember (p a) as pa eqn: Hpa. destruct pa.
-    + apply (Some F1).
-    + simpl. destruct (list_find_index A l p).
-      * apply FS in t. apply (Some t).
-      * apply None.
-Defined.
-
-Lemma list_find_index_empty : forall A p, @list_find_index A [] p = None.
-Proof. intros. reflexivity. Qed.
+Fixpoint list_find_index {A} (l : list A) (p : A -> bool) : option (Fin.t (List.length l)) :=
+  match l with
+  | [] => None
+  | h::tl =>
+    if p h then Some F1
+    else match list_find_index tl p with
+         | Some f => Some (FS f)
+         | None => None
+         end
+  end.
 
 Example list_find_index_0 :
   option_map (fun f => proj1_sig (Fin.to_nat f))
@@ -126,6 +121,9 @@ Proof. intros. reflexivity. Qed.
 Example list_find_index_miss :
   option_map (fun f => proj1_sig (Fin.to_nat f))
              (list_find_index [1; 2; 3] (fun n => n =? 0)) = None.
+Proof. intros. reflexivity. Qed.
+
+Lemma list_find_index_empty : forall A p, @list_find_index A [] p = None.
 Proof. intros. reflexivity. Qed.
 
 Definition choose {E} `{nondetFinE -< E}
