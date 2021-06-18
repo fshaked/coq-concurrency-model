@@ -116,26 +116,13 @@ Module Make (Arc : ArcSig)
                    (case_ inl_ (* stateE Thread.state *)
                           (case_ (cat inl_ (cat inr_ inr_)) (* exceptE disabled *)
                                  (cat inr_ (cat inr_ inr_))))) (* exceptE error *)
-          (* interp *)
-          (*   (case_ *)
-          (*      (cat inl_ (cat inr_ inr_)) (* exceptE disabled *) *)
-          (*      (case_ *)
-          (*         (cat inr_ (cat inr_ inr_)) (* exceptE error *) *)
-          (*         (case_ *)
-          (*            (cat (Storage.handle_storageE iid tid) *)
-          (*                 (case_ *)
-          (*                    (cat inl_ inr_) (* stateE Storage.state *) *)
-          (*                    (case_ *)
-          (*                       (cat inl_ (cat inr_ inr_)) (* exceptE disabled *) *)
-          (*                       (cat inr_ (cat inr_ inr_))))) (* exceptE error *) *)
-          (*            inl_))) (* stateE Thread.state *) *)
             it in
       s <- get
       ;; thr_state <- try_unwrap_option (List.nth_error s.(threads) tid)
                                        "get_thread_state: thread is missing"
       ;; let it := run_state it (thr_state : Thread.state) in
          let it := run_state it s.(storage) in
-         '(sto_state, (thr_state, ans)) <- resum_it' _ it
+         '(sto_state, (thr_state, ans)) <- resum_it _ it
       ;; let ts := list_replace_nth tid thr_state s.(threads) in
          put (s <| storage := sto_state |> <| threads := ts |>)
       ;; ret ans.

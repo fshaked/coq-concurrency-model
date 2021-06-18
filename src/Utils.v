@@ -64,12 +64,9 @@ Fixpoint tree_map_with_context {T Y : Type}
 Definition id_t := nat.
 
 
-Definition resum_it' {E F} `{E -< F} : itree E ~> itree F :=
-  fun _ it => translate subevent it.
-
-
 Definition resum_it {E F} `{E -< F} : itree E ~> itree F :=
-  fun _ it => interp (fun _ e => trigger e) it.
+  fun _ it => translate subevent it.
+(* Alternatively: fun _ it => interp (fun _ e => trigger e) it. *)
 
 Variant wrapE E T : Type -> Type :=
 | Wrap : forall A, E A -> T -> wrapE E T A.
