@@ -6,6 +6,9 @@ From Coq Require Import
 
 Import ListNotations.
 
+Require Import bbv.Word.
+Import Word.Notations.
+
 From ITree Require Import
      ITree
      ITreeFacts
@@ -61,7 +64,7 @@ Module AArch64Core <: InsSemCoreSig.
   | OpGPR : gpr -> operand
   | OpImm : nat -> operand.
 
-  Variant binop : Type := BOAdd.
+  Variant log_op : Type := LOAnd | LOXor | LOOr.
 
   Variant _ast : Type :=
   (* dst, addr, offset : load from memory location `addr + offset` to `dst` *)
@@ -69,7 +72,7 @@ Module AArch64Core <: InsSemCoreSig.
   (* val, addr, offset : store `val` to memory location `addr + offset` *)
   | Store : operand -> gpr -> operand -> _ast
   (* op, dst, lhs, rhs *)
-  | BinOp : binop -> gpr -> gpr -> operand -> _ast.
+  | LogOp : log_op -> gpr -> gpr -> operand -> _ast.
   Definition ast := _ast.
 End AArch64Core.
 
@@ -78,8 +81,10 @@ Module AArch64 <: InsSemSig.
   Include Core.
   Include InsSemCoreFacts AArch64Core.
 
-  Definition full_reg_of_reg (r : reg) :=
-    (r, (0, reg_size r)).
+  Definition full_reg_of_reg (r : reg) : reg_slc :=
+    {| rs_reg := r;
+       rs_first_bit := 0;
+       rs_size := reg_size r |}.
 
   Definition reg_slc_of_operand (o : operand) : list reg_slc :=
     match o with
@@ -104,7 +109,7 @@ Module AArch64 <: InsSemSig.
       let iaregs := List.map (fun r => (r, true)) iaregs in
       {| input_regs := iregs ++ iaregs;
          output_regs := nil |}
-    | BinOp op dst lhs rhs =>
+    | LogOp op dst lhs rhs =>
       let iregs := reg_slc_of_operand rhs in
       let iregs := full_reg_of_reg (GPR lhs) :: iregs in
       let iregs := List.map (fun r => (r, false)) iregs in
@@ -113,52 +118,129 @@ Module AArch64 <: InsSemSig.
          output_regs := oregs |}
     end.
 
-  Definition read_operand (o : operand) : itree E reg_val :=
+  Definition read_operand (o : operand) : itree E (reg_val _) :=
     match o with
-    | OpGPR r => trigger (RegERead ((GPR r), (0, reg_size (GPR r))))
-    | OpImm i => ret (reg_val_of_nat i)
+    | OpGPR r => trigger (RegERead (full_reg_of_reg (GPR r)))
+    | OpImm i => ret (reg_val_of_nat 64 i)
     end.
 
-  Definition get_binop (op : binop) : reg_val -> reg_val -> reg_val :=
+  Definition get_log_op {sz} (op : log_op) : reg_val sz -> reg_val sz -> reg_val sz :=
     match op with
-    | BOAdd => reg_val_add
+    | LOAnd => fun r1 r2 => wand r1 r2
+    | LOXor => fun r1 r2 => wxor r1 r2
+    | LOOr => fun r1 r2 => wor r1 r2
     end.
 
   Definition denote : ktree E ast unit :=
     fun ins =>
       match ins with
       | Load dst addr off =>
-        let addr_slc := ((GPR addr), (0, reg_size (GPR addr))) in
+        let size := 8 in
+        let addr_slc := full_reg_of_reg (GPR addr) in
+        let dst_slc := {| rs_reg := GPR dst; rs_first_bit := 0; rs_size := size * 8 |} in
         addr_val <- trigger (RegERead addr_slc)
         ;; off_val <- read_operand off
         ;; let loc := nat_of_reg_val (reg_val_add addr_val off_val) in
-           let mem_slc := {| location := loc; size := 8 |} in
+           let mem_slc := {| location := loc; size := size |} in
            mem_val <- trigger (MemERead mem_slc)
-        ;; let reg_val := reg_val_of_mem_slc_val mem_val in
-           let dst_slc := ((GPR dst), (0, reg_size (GPR dst))) in
+        ;; let reg_val := reg_val_of_mem_slc_val (size * 8) mem_val in
            trigger (RegEWrite dst_slc reg_val)
       | Store val addr off =>
-        let addr_slc := ((GPR addr), (0, reg_size (GPR addr))) in
+        let addr_slc := full_reg_of_reg (GPR addr) in
         addr_val <- trigger (RegERead addr_slc)
         ;; off_val <- read_operand off
         ;; let loc := nat_of_reg_val (reg_val_add addr_val off_val) in
            let mem_slc := {| location := loc; size := 8 |} in
            'tt <- trigger (MemEWriteFP mem_slc)
         ;; val_val <- read_operand val
-        ;; let mem_val := mem_slc_val_of_reg_val val_val 8 in
+        ;; let mem_val := mem_slc_val_of_reg_val val_val in
            trigger (MemEWriteVal mem_val)
-      | BinOp op dst lhs rhs =>
-        lhsv <- trigger (RegERead ((GPR lhs), (0, reg_size (GPR lhs))))
+      | LogOp op dst lhs rhs =>
+        lhsv <- trigger (RegERead (full_reg_of_reg (GPR lhs)))
         ;; rhsv <- read_operand rhs
-        ;; let res := get_binop op lhsv rhsv in
-           trigger (RegEWrite ((GPR dst), (0, reg_size (GPR dst))) res)
+        ;; let res := get_log_op op lhsv rhsv in
+           trigger (RegEWrite (full_reg_of_reg (GPR dst)) res)
       end.
 
+  Definition decode_reg (b4 b3 b2 b1 b0 : bool) : option gpr :=
+    List.nth_error
+      [R0; R1; R2; R3; R4; R5; R6; R7; R8; R9]
+      (wordToNat (WS b0 (WS b1 (WS b2 (WS b3 (WS b4 WO)))))).
+
+  Definition decode_log_op (b1 b0 : bool) : option log_op :=
+    match b1, b0 with
+    | false, false => Some LOAnd
+    | false, true => Some LOOr
+    | true, false => Some LOXor
+    | _, _ => None
+    end.
+
+  Notation "w '~' b" := (WS b w) (at level 7, left associativity, format "w '~' b") : word_scope.
+
   Definition decode (machine_code : mem_slc_val) : option ast :=
-    match reg_val_of_mem_slc_val machine_code with
-    | N0 => None
+    match reg_val_of_mem_slc_val 32 machine_code with
+    (* LDR (register) 64-bit, LSL-0:
+       [1(x=1) 111 0 00 01 1 Rm (option=011) (S=0) 10 Rn Rt] *)
+    | (WO~ 1~1 ~ 1~1~1 ~ 0 ~ 0~0 ~ 0~1 ~ 1 ~ Rm4~Rm3~Rm2~Rm1~Rm0 ~ 0~1~1 ~ 0
+         ~ 1~0 ~ Rn4~Rn3~Rn2~Rn1~Rn0 ~ Rt4~Rt3~Rt2~Rt1~Rt0)%word =>
+      match decode_reg Rm4 Rm3 Rm2 Rm1 Rm0,
+            decode_reg Rn4 Rn3 Rn2 Rn1 Rn0,
+            decode_reg Rt4 Rt3 Rt2 Rt1 Rt0 with
+      | Some Rm, Some Rn, Some Rt => Some (Load Rt Rn (OpGPR Rm))
+      | _, _, _ => None
+      end
+    (* LDR (immediate) unsigned offset, 64-bit:
+       [1(x=1) 111 0 01 01 imm12 Rn Rt] *)
+    | (WO~ 1~1 ~ 1~1~1 ~ 0 ~ 0~1 ~ 0~1 ~ i11~i10~i9~i8~i7~i6~i5~i4~i3~i2~i1~i0
+         ~ Rn4~Rn3~Rn2~Rn1~Rn0 ~ Rt4~Rt3~Rt2~Rt1~Rt0)%word =>
+      match decode_reg Rn4 Rn3 Rn2 Rn1 Rn0,
+            decode_reg Rt4 Rt3 Rt2 Rt1 Rt0 with
+      | Some Rn, Some Rt =>
+        let imm12 := WS i0 (WS i1 (WS i2 (WS i3 (WS i4 (WS i5 (WS i6 (WS i7
+                     (WS i8 (WS i9 (WS i10 (WS i11 WO))))))))))) in
+        let offset := wordToNat (imm12 ^<< 3) in
+        Some (Load Rt Rn (OpImm offset))
+      | _, _ => None
+      end
+    (* STR (register) 64-bit, LSL-0:
+       [1(x=1) 111 0 00 00 1 Rm (option=011) (S=0) 10 Rn Rt] *)
+    | (WO~ 1~1 ~ 1~1~1 ~ 0 ~ 0~0 ~ 0~0 ~ 1 ~ Rm4~Rm3~Rm2~Rm1~Rm0 ~ 0~1~1 ~ 0
+         ~ 1~0 ~ Rn4~Rn3~Rn2~Rn1~Rn0 ~ Rt4~Rt3~Rt2~Rt1~Rt0)%word =>
+      match decode_reg Rm4 Rm3 Rm2 Rm1 Rm0,
+            decode_reg Rn4 Rn3 Rn2 Rn1 Rn0,
+            decode_reg Rt4 Rt3 Rt2 Rt1 Rt0 with
+      | Some Rm, Some Rn, Some Rt => Some (Store (OpGPR Rt) Rn (OpGPR Rm))
+      | _, _, _ => None
+      end
+    (* STR (immediate) unsigned offset, 64-bit:
+       [1(x=1) 111 0 01 00 imm12 Rn Rt] *)
+    | (WO~ 1~1 ~ 1~1~1 ~ 0 ~ 0~1 ~ 0~0 ~ i11~i10~i9~i8~i7~i6~i5~i4~i3~i2~i1~i0
+         ~ Rn4~Rn3~Rn2~Rn1~Rn0 ~ Rt4~Rt3~Rt2~Rt1~Rt0)%word =>
+      match decode_reg Rn4 Rn3 Rn2 Rn1 Rn0,
+            decode_reg Rt4 Rt3 Rt2 Rt1 Rt0 with
+      | Some Rn, Some Rt =>
+        let imm12 := WS i0 (WS i1 (WS i2 (WS i3 (WS i4 (WS i5 (WS i6 (WS i7
+                     (WS i8 (WS i9 (WS i10 (WS i11 WO))))))))))) in
+        let offset := wordToNat (imm12 ^<< 3) in
+        Some (Store (OpGPR Rt) Rn (OpImm offset))
+      | _, _ => None
+      end
+    (* AND/EOR/ORR (shifted register), 64-bit, LSL-0:
+       [(sf=1) opc 01010 (shift=00) (N=0) Rm (imm6=000000) Rn Rd] *)
+    | (WO~ opc1~opc0 ~ 0~1~0~1~0 ~ 0~0 ~ 0 ~ Rm4~Rm3~Rm2~Rm1~Rm0 ~ 0~0~0~0~0~0
+         ~ Rn4~Rn3~Rn2~Rn1~Rn0 ~ Rd4~Rd3~Rd2~Rd1~Rd0)%word =>
+      match decode_log_op opc1 opc0,
+            decode_reg Rm4 Rm3 Rm2 Rm1 Rm0,
+            decode_reg Rn4 Rn3 Rn2 Rn1 Rn0,
+            decode_reg Rd4 Rd3 Rd2 Rd1 Rd0 with
+      | Some op, Some Rm, Some Rn, Some Rd => Some (LogOp op Rd Rn (OpGPR Rm))
+      | _, _, _, _ => None
+      end
+
+
+    (* TODO: AND (immediate), 64-bit:
+       [(sf=1) 00 100100 N immr imms Rn Rd] *)
     (* FIXME: *)
-    | Npos (xI (xI xH)) => None
     | _ => None
     end.
 

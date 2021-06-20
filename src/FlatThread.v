@@ -177,11 +177,11 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
                           rrs_reads_from : list (instruction_id_t * nat);
                           (* the [nat] is an index into [ins_reg_writes.rws_slc]
                                                 of the instruction pointed by the [instruction_id_t]. *)
-                          rrs_val : option Arc.InsSem.reg_val }.
+                          rrs_val : option (Arc.InsSem.reg_val rrs_slc.(Arc.InsSem.rs_size)) }.
 
     Record reg_write_state :=
       mk_reg_write_state { rws_slc : Arc.InsSem.reg_slc;
-                           rws_val : option Arc.InsSem.reg_val;
+                           rws_val : option (Arc.InsSem.reg_val rws_slc.(Arc.InsSem.rs_size));
                            (* [rws_reg_data_flow] is a concatination of all the
                             [rrs_reads_from] of the instruction, when the
                             reg-write was performed. We assume that there is a
@@ -344,11 +344,12 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
 
 
       Definition try_read_reg_slc (rslc : Arc.InsSem.reg_slc)
-        : itree F Arc.InsSem.reg_val :=
+        : itree F (Arc.InsSem.reg_val rslc.(Arc.InsSem.rs_size)) :=
         (* FIXME: *)
         ITree.spin.
 
-      Definition try_write_reg_slc (rslc : Arc.InsSem.reg_slc) (val : Arc.InsSem.reg_val)
+      Definition try_write_reg_slc (rslc : Arc.InsSem.reg_slc)
+                 (val : Arc.InsSem.reg_val rslc.(Arc.InsSem.rs_size))
         : itree F unit :=
         s <- get
         ;; '(_, ins, _) <- get_dec_instruction_state iid s

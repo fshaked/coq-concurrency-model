@@ -6,6 +6,8 @@ From Coq Require Import
 
 Import ListNotations.
 
+From bbv Require Import Word.
+
 From ITree Require Import
      ITree
      ITreeFacts
@@ -165,41 +167,46 @@ Module Type InsSemCoreSig.
 End InsSemCoreSig.
 
 Module InsSemCoreFacts (Core : InsSemCoreSig).
-  (* `(a,b)` represents all the bits between `a` and `b`, including `a` but not
-  including `b`. *)
-  Definition reg_slc : Type := Core.reg * (nat * nat).
-  Definition reg_slc_eqb (s1 s2 : reg_slc) : bool :=
-    let '(r1, (a1, b1)) := s1 in
-    let '(r2, (a2, b2)) := s2 in
-    Core.reg_eqb r1 r2 && Nat.eqb a1 a2 && Nat.eqb b1 b2.
+  (* `(i,s)` represents all the bits between `i` and `i+s`, including `i` but not
+  including `i+s`. *)
+  Record reg_slc := { rs_reg : Core.reg;
+                      rs_first_bit : nat;
+                      rs_size : nat }.
 
-  Definition reg_val := N.
-  Definition reg_val_add := N.add.
-  Definition reg_val_of_nat (n : nat) : reg_val := N.of_nat n.
-  Definition nat_of_reg_val (n : reg_val) : nat := N.to_nat n.
-  Fixpoint reg_val_of_mem_slc_val (v : mem_slc_val) : reg_val :=
-    match v with
-    | nil => 0%N
-    | h::tl => ((N.of_nat h) + (N.shiftl (reg_val_of_mem_slc_val tl) 8))%N
-    end.
-  Fixpoint mem_slc_val_of_reg_val (n : reg_val) (size : nat)
+  Definition reg_slc_eqb (s1 s2 : reg_slc) : bool :=
+    Core.reg_eqb s1.(rs_reg) s2.(rs_reg) &&
+    Nat.eqb s1.(rs_first_bit) s2.(rs_first_bit) &&
+    Nat.eqb s1.(rs_size) s2.(rs_size).
+
+  Definition reg_val := word.
+  Definition reg_val_add {sz} (r1 : reg_val sz) (r2 : reg_val sz) : reg_val sz := wplus r1 r2.
+  Definition reg_val_of_nat (sz n : nat) : reg_val sz := natToWord sz n.
+  Definition nat_of_reg_val {sz : nat} (n : reg_val sz) : nat := wordToNat n.
+  Fixpoint reg_val_of_mem_slc_val (sz : nat) (v : mem_slc_val) : reg_val sz :=
+    reg_val_of_nat sz (nat_of_mem_slc_val v).
+    (* match v with *)
+    (* | nil => 0%N *)
+    (* | h::tl => ((N.of_nat h) + (N.shiftl (reg_val_of_mem_slc_val tl) 8))%N *)
+    (* end. *)
+  Fixpoint mem_slc_val_of_reg_val {sz : nat} (n : reg_val sz)
     : mem_slc_val :=
-    let byte_mask := ((2 ^ 8) - 1)%N in
-    match size with
-    | O => nil
-    | S size =>
-      N.to_nat (N.land byte_mask n) :: mem_slc_val_of_reg_val (N.shiftr n 8) size
-    end.
-  Definition mem_loc_of_reg_val (n : reg_val) : mem_loc := N.to_nat n.
-  Definition reg_val_of_mem_loc (loc : mem_loc) : reg_val := N.of_nat loc.
+    mem_slc_val_of_nat (nat_of_reg_val n) (sz / 8).
+    (* let byte_mask := ((2 ^ 8) - 1)%N in *)
+    (* match size with *)
+    (* | O => nil *)
+    (* | S size => *)
+    (*   N.to_nat (N.land byte_mask n) :: mem_slc_val_of_reg_val (N.shiftr n 8) size *)
+    (* end. *)
+  Definition mem_loc_of_reg_val {sz : nat} (n : reg_val sz) : mem_loc :=  nat_of_reg_val n.
+  Definition reg_val_of_mem_loc (sz : nat) (loc : mem_loc) : reg_val sz := reg_val_of_nat sz loc.
 
   Record info :=
     mk_info { input_regs : list (reg_slc * bool);
               output_regs : list reg_slc }.
 
   Variant regE : Type -> Type :=
-  | RegERead : reg_slc -> regE reg_val
-  | RegEWrite : reg_slc -> reg_val -> regE unit.
+  | RegERead (s : reg_slc) : regE (reg_val s.(rs_size))
+  | RegEWrite (s : reg_slc) : reg_val s.(rs_size) -> regE unit.
 
   Variant memE : Type -> Type :=
   | MemERead : mem_slc -> memE mem_slc_val
