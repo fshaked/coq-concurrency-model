@@ -7,6 +7,7 @@ From Coq Require Import
 Import ListNotations.
 
 From bbv Require Import Word.
+Import Word.Notations.
 
 From ITree Require Import
      ITree
@@ -69,56 +70,20 @@ Record mem_slc : Type :=
 (* [mem_slc_val] is a list of byte values, head is least significant. *)
 Definition mem_slc_val : Type := list nat.
 
-Definition reads_from_slc (slc : mem_slc) (val : mem_slc_val) (uslc : mem_slc)
-  : option (mem_slc * mem_slc_val * list mem_slc) :=
-  if decide (slc.(location) < uslc.(location) + uslc.(size) /\
-             uslc.(location) < slc.(location) + slc.(size)) then
-    let val_start := max slc.(location) uslc.(location) in
-    let val_end := min (slc.(location) + slc.(size)) (uslc.(location) + uslc.(size)) in
+Instance slice_mem_slc : Slice mem_slc :=
+  { start := location;
+    size := size;
+    sub_slice := fun s start size => Some ({| location := start;
+                                           size := size |}) }.
 
-    let slc' := {| location := val_start;
-                   size := val_end - val_start |} in
-    let val' := List.firstn slc'.(size) (List.skipn (slc'.(location) - slc.(location)) val) in
-
-    let uslcs' :=
-        if decide (uslc.(location) < slc'.(location)) then
-          {| location := uslc.(location);
-             size := slc'.(location) - uslc.(location) |}::nil
-        else nil in
-    let uslcs' :=
-        if decide (val_end < uslc.(location) + uslc.(size)) then
-          {| location := val_end;
-             size := uslc.(location) + uslc.(size) - val_end |}::uslcs'
-        else uslcs' in
-
-    Some (slc', val', uslcs')
-  else
-    None.
-
-Fixpoint reads_from {T} (eqb_T : T -> T -> bool)
-         (vals : list (T * (mem_slc * mem_slc_val)))
-         (uslcs : list mem_slc)
-         (rf : list (T * (mem_slc * mem_slc_val)))
-  : list mem_slc * list (T * (mem_slc * mem_slc_val)) :=
-  match vals with
-  | (id, (slc, val))::vals =>
-    let '(rf', uslcs') :=
-        List.split
-          (List.map (fun uslc =>
-                       match reads_from_slc slc val uslc with
-                       | Some (slc', val', uslcs') =>
-                         (Some (id, (slc', val')), uslcs')
-                       | None => (None, [uslc])
-                       end) uslcs) in
-    let rf := List.fold_left (fun rf val =>
-                                match val with
-                                | Some val => val::rf
-                                | None => rf
-                                end) rf' rf in
-    let uslcs' := List.concat uslcs' in
-    reads_from eqb_T vals uslcs rf
-  | nil => (uslcs, rf)
-  end.
+Instance slice_mem_slc_val : Slice (mem_slc * mem_slc_val) :=
+  { start := fun '(s, _) => s.(location);
+    size := fun '(s, _) => s.(size);
+    sub_slice := fun '(s, v) start size =>
+                   let s' := {| location := start;
+                                size := size |} in
+                   let v' := List.firstn size (List.skipn (start - s.(location)) v) in
+                   Some (s', v') }.
 
 Fixpoint mem_slc_val_of_reads_from_helper {T}
            (slc : mem_slc) (vals : list (T * (mem_slc * mem_slc_val)))
@@ -173,6 +138,13 @@ Module InsSemCoreFacts (Core : InsSemCoreSig).
                       rs_first_bit : nat;
                       rs_size : nat }.
 
+  Instance slice_reg_slc : Slice reg_slc :=
+    { start := rs_first_bit;
+      size := rs_size;
+      sub_slice := fun s start size => Some ({| rs_reg := s.(rs_reg);
+                                             rs_first_bit := start;
+                                             rs_size := size |}) }.
+
   Definition reg_slc_eqb (s1 s2 : reg_slc) : bool :=
     Core.reg_eqb s1.(rs_reg) s2.(rs_reg) &&
     Nat.eqb s1.(rs_first_bit) s2.(rs_first_bit) &&
@@ -199,6 +171,37 @@ Module InsSemCoreFacts (Core : InsSemCoreSig).
     (* end. *)
   Definition mem_loc_of_reg_val {sz : nat} (n : reg_val sz) : mem_loc :=  nat_of_reg_val n.
   Definition reg_val_of_mem_loc (sz : nat) (loc : mem_loc) : reg_val sz := reg_val_of_nat sz loc.
+
+  Record reg_slc_val := { rsv_slc : reg_slc;
+                          rsv_val : option (reg_val rsv_slc.(rs_size)) }.
+
+  Program Instance slice_reg_slc_val : Slice reg_slc_val :=
+    { start := fun s => start s.(rsv_slc);
+      size := fun s => Utils.size s.(rsv_slc); }.
+  Obligation 1.
+  rename X into rsv. rename H into start. rename H0 into size.
+  destruct rsv; destruct rsv_val0.
+  - destruct (decide (Utils.start rsv_slc0 <= start /\
+                      start - (Utils.start rsv_slc0) + size <= (Utils.size rsv_slc0)))
+      as [[Hl1 Hl2]|].
+    + remember ((start - (Utils.start rsv_slc0)) + size) as lsbs eqn:Hlsbs.
+      destruct rsv_slc0; simpl in *.
+      assert (Hv1 : lsbs + (rs_size0 - lsbs) = rs_size0).
+      { rewrite Nat.add_comm. rewrite Nat.sub_add; auto. }
+      assert (Hv2 : lsbs - size + size = lsbs).
+      { rewrite Nat.sub_add.
+        - reflexivity.
+        - rewrite Hlsbs. apply Plus.le_plus_r. }
+      rewrite <- Hv1 in r.
+      rewrite <- Hv2 in r.
+      remember (split1 (lsbs - size + size) (rs_size0 - (lsbs - size + size)) r).
+      remember (split2 (lsbs - size) size w).
+      apply (Some ({| rsv_slc := {| rs_reg := rs_reg0;
+                                    rs_first_bit := start;
+                                    rs_size := size |}; rsv_val := Some w0 |})).
+    + apply None.
+  - apply None.
+  Qed.
 
   Record info :=
     mk_info { input_regs : list (reg_slc * bool);

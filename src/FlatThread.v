@@ -23,6 +23,9 @@ Typeclasses eauto := 5.
 From RecordUpdate Require Import RecordSet.
 Import RecordSetNotations.
 
+From bbv Require Import Word.
+Import Word.Notations.
+
 Require Import Types Utils.
 Require Import  Decision.
 
@@ -174,7 +177,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
     Record reg_read_state :=
       mk_reg_read_state { rrs_slc : Arc.InsSem.reg_slc;
                           rrs_feeding_addr : bool;
-                          rrs_reads_from : list (instruction_id_t * nat);
+                          rrs_reads_from : list (instruction_id_t * nat * Arc.InsSem.reg_slc_val);
                           (* the [nat] is an index into [ins_reg_writes.rws_slc]
                                                 of the instruction pointed by the [instruction_id_t]. *)
                           rrs_val : option (Arc.InsSem.reg_val rrs_slc.(Arc.InsSem.rs_size)) }.
@@ -260,6 +263,70 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
       {| next_iid := iid + 1;
          instruction_tree := Tree (iid, loc, None) [] |}.
 
+    Section RegisterRead.
+      Local Instance slice_id_rsv : Slice (instruction_id_t * nat * Arc.InsSem.reg_slc_val) :=
+        { start := fun '(_, _, s) => Utils.start s;
+          size := fun '(_, _, s) => Utils.size s;
+          sub_slice := fun '(id, s) start size =>
+                         match sub_slice s start size with
+                         | Some s' => Some (id, s')
+                         | None => None
+                         end }.
+
+      Fixpoint read_reg_slcs
+               (rslcs : list Arc.InsSem.reg_slc)
+               (pref : list instruction_state)
+               (rf : list (instruction_id_t * nat * Arc.InsSem.reg_slc_val))
+        : option (list (instruction_id_t * nat * Arc.InsSem.reg_slc_val)) :=
+        match pref with
+        | (iid, _, Some ins)::pref =>
+          match Utils.reads_from_slcs
+                  (List.map (fun '(i, w) => ((iid, i), {| Arc.InsSem.rsv_slc := w.(rws_slc);
+                                                       Arc.InsSem.rsv_val := w.(rws_val) |}))
+                            (List.combine (List.seq 0 (List.length ins.(ins_reg_writes)))
+                                          ins.(ins_reg_writes)))
+                  rslcs
+                  rf with
+          | Some (rf, nil) => Some rf
+          | Some (rf, rslcs) => read_reg_slcs rslcs pref rf
+          | None => None
+          end
+        | (iid, _, None)::_ => None
+        | nil =>
+          (* FIXME: read initial value *)
+          None
+        end.
+
+      Program Definition reg_val_of_reads_from (slc : Arc.InsSem.reg_slc)
+                 (rf : list ((instruction_id_t * nat) * Arc.InsSem.reg_slc_val))
+        : Arc.InsSem.reg_val slc.(Arc.InsSem.rs_size) :=
+        List.fold_left
+          (fun w '(_, rsv) =>
+             match rsv.(Arc.InsSem.rsv_val) with
+             | Some val =>
+               if decide (rsv.(Arc.InsSem.rsv_slc).(Arc.InsSem.rs_size)
+                          <= slc.(Arc.InsSem.rs_size) /\
+                          slc.(Arc.InsSem.rs_first_bit)
+                          <= rsv.(Arc.InsSem.rsv_slc).(Arc.InsSem.rs_first_bit)) then
+                 let w' := zext val (slc.(Arc.InsSem.rs_size) -
+                                     rsv.(Arc.InsSem.rsv_slc).(Arc.InsSem.rs_size)) in
+                 let w' := (w' ^<< (rsv.(Arc.InsSem.rsv_slc).(Arc.InsSem.rs_first_bit) -
+                                    slc.(Arc.InsSem.rs_first_bit)))%word in
+                 wor w w'
+               else
+                 (* FIXME: this shouldn't be reachable *)
+                 w
+             | None =>
+               (* FIXME: this shouldn't be reachable *)
+               w
+             end)
+          rf (wzero slc.(Arc.InsSem.rs_size)).
+      Obligation 1.
+      destruct r, rsv_slc, slc; simpl in *.
+      rewrite Nat.add_comm. apply Nat.sub_add. auto.
+      Qed.
+    End RegisterRead.
+
     Definition get_instruction_state {F} `{exceptE error -< F}
                (iid : instruction_id_t) (s : state)
       : itree F (list instruction_state * instruction_state * list (tree instruction_state)) :=
@@ -308,6 +375,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
       Context {F : Type -> Type}.
       Context `{Arc.storageE -< F}.
       Context `{stateE state -< F}.
+      Context `{exceptE disabled -< F}.
       Context `{exceptE error -< F}.
 
       Variable iid : instruction_id_t.
@@ -342,11 +410,26 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
         let iid := iid in
         ret tt.
 
-
       Definition try_read_reg_slc (rslc : Arc.InsSem.reg_slc)
         : itree F (Arc.InsSem.reg_val rslc.(Arc.InsSem.rs_size)) :=
-        (* FIXME: *)
-        ITree.spin.
+        s <- get
+        ;; '(pref, ins, _) <- get_dec_instruction_state iid s
+        ;; match read_reg_slcs [rslc] pref [] with
+           | Some rf =>
+             let val := reg_val_of_reads_from rslc rf in
+             let reg_reads :=
+                 List.map
+                   (fun rrs =>
+                      if Arc.InsSem.reg_slc_eqb rrs.(rrs_slc) rslc then
+                        mk_reg_read_state rslc rrs.(rrs_feeding_addr) rf (Some val)
+                      else rrs)
+                   ins.(ins_reg_reads) in
+             let ins := ins <| ins_reg_reads := reg_reads |> in
+             let s := update_dec_instruction_state iid ins s in
+             'tt <- put s
+             ;; ret val
+           | None => throw Disabled
+           end.
 
       Definition try_write_reg_slc (rslc : Arc.InsSem.reg_slc)
                  (val : Arc.InsSem.reg_val rslc.(Arc.InsSem.rs_size))
@@ -357,7 +440,8 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
                List.map
                  (fun rws =>
                     if Arc.InsSem.reg_slc_eqb rws.(rws_slc) rslc then
-                      let rdf := List.concat (List.map rrs_reads_from ins.(ins_reg_reads)) in
+                      let rdf := List.concat (List.map (fun rrs => List.map fst rrs.(rrs_reads_from))
+                                                       ins.(ins_reg_reads)) in
                       let mdf := match ins.(ins_mem_reads) with Some _ => true | _ => false end in
                       mk_reg_write_state rslc (Some val) rdf mdf
                     else rws)

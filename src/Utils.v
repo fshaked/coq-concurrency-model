@@ -34,6 +34,7 @@ Local Open Scope itree_scope.
    This bounds the instance search depth: *)
 Typeclasses eauto := 5.
 
+Require Import Decision.
 
 Fixpoint list_replace_nth {T} (n : nat) (x : T) (l : list T) : list T :=
   match n, l with
@@ -224,3 +225,73 @@ CoFixpoint scheduler {E S IR R}
          end
        end
   end.
+
+Section Slices.
+  Class Slice (T : Type) := { start : T -> nat;
+                              size : T -> nat;
+                              sub_slice : T -> nat -> nat -> option T }.
+
+  Definition reads_from_slcs_helper_helper {S S'} `{Slice S} `{Slice S'}
+             (slc : S) (uslc : S')
+    : option (option (S * list S')) :=
+    if decide (start slc < start uslc + size uslc /\
+               start uslc < start slc + size slc) then
+      let slc'_start := max (start slc) (start uslc) in
+      let slc'_end := min ((start slc) + (size slc)) ((start uslc) + (size uslc)) in
+      match sub_slice slc slc'_start (slc'_end - slc'_start) with
+      | Some slc' =>
+
+        match
+            (if decide (start uslc < start slc') then
+               match sub_slice uslc (start uslc) ((start slc') - (start uslc)) with
+               | Some s => Some [s]
+               | None => None
+               end
+            else Some nil),
+            (if decide (slc'_end < (start uslc) + (size uslc)) then
+               match sub_slice uslc slc'_end ((start uslc) + (size uslc) - slc'_end) with
+               | Some s => Some [s]
+               | None => None
+               end
+            else Some nil)
+        with
+        | Some uslcs1, Some uslcs2 => Some (Some (slc', uslcs1 ++ uslcs2))
+        | _, _ => None
+        end
+      | None => None
+      end
+    else
+      Some None.
+
+  Fixpoint reads_from_slcs_helper {S S'} `{Slice S} `{Slice S'}
+           (slc : S)
+           (uslcs : list S')
+           (acc_rf : list S)
+           (acc_uslcs : list S')
+    : option (list S * list S') :=
+    match uslcs with
+    | uslc::uslcs =>
+      match reads_from_slcs_helper_helper slc uslc with
+      | Some (Some (slc', uslcs')) =>
+        reads_from_slcs_helper slc uslcs (slc'::acc_rf) (uslcs' ++ acc_uslcs)
+      | Some None =>
+        reads_from_slcs_helper slc uslcs acc_rf (uslc::acc_uslcs)
+      | None => None
+      end
+    | nil => Some (acc_rf, acc_uslcs)
+    end.
+
+  Fixpoint reads_from_slcs {S S'} `{Slice S} `{Slice S'}
+           (slcs : list S)
+           (uslcs : list S')
+           (rf : list S)
+    : option (list S * list S') :=
+    match slcs with
+    | slc::slcs =>
+      match reads_from_slcs_helper slc uslcs rf [] with
+      | Some (rf', uslcs') => reads_from_slcs slcs uslcs' rf'
+      | None => None
+      end
+    | nil => Some (rf, uslcs)
+    end.
+End Slices.

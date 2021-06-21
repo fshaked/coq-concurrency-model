@@ -35,16 +35,25 @@ Module Make (Arc : ArcSig) : StorageSig Arc.
     : state :=
     {| mem := mem |}.
 
+  Local Instance slice_prod_r {T S} `{Slice S} : Slice (T * S) :=
+    { start := fun '(_, s) => Utils.start s;
+      size := fun '(_, s) => Utils.size s;
+      sub_slice := fun '(v, s) start size =>
+                     match sub_slice s start size with
+                     | Some s' => Some (v, s')
+                     | None => None
+                     end }.
+
   Definition get_slcs_val (slcs : list mem_slc) (s : state) : option Arc.mem_reads_from :=
-    let '(uslcs, rf) :=
-        reads_from (fun ids ids' => isTrue (ids = ids'))
-                   (List.map (fun '(tid, iid, w) =>
-                                ((tid, iid, w.(Arc.write_id)),(w.(Arc.write_footprint), w.(Arc.write_val))))
-                             s.(mem))
-                   slcs [] in
-    match uslcs with
-    | nil => Some rf
-    | _ => None
+    match
+      Utils.reads_from_slcs
+        (List.map (fun '(tid, iid, w) =>
+                     ((tid, iid, w.(Arc.write_id)),(w.(Arc.write_footprint), w.(Arc.write_val))))
+                  s.(mem))
+        slcs [] with
+    | Some (rf, nil) => Some rf
+    | Some (_, _) => (* TODO: accessing unallocated mem? *) None
+    | None => None
     end.
 
   Definition try_read_instruction {E}
