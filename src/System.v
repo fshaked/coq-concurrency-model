@@ -67,7 +67,10 @@ Module Make (Arc : ArcSig)
              (entry_locs : list mem_loc)
     : state :=
     {| storage := Storage.initial_state mem;
-       threads := List.map (Thread.initial_state 0) entry_locs |}.
+       threads := List.map
+                    (* The first iid is 1; we use iid 0 for reg-writes with initial values *)
+                    (Thread.initial_state 1)
+                    entry_locs |}.
 
   (* Definition interp_storage {E} *)
   (*            `{exceptE disabled -< E} *)

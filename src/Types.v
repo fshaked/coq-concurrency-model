@@ -177,30 +177,31 @@ Module InsSemCoreFacts (Core : InsSemCoreSig).
 
   Program Instance slice_reg_slc_val : Slice reg_slc_val :=
     { start := fun s => start s.(rsv_slc);
-      size := fun s => Utils.size s.(rsv_slc); }.
+      size := fun s => Utils.size s.(rsv_slc);
+      sub_slice := fun rsv start size =>
+                     match rsv.(rsv_val) with
+                     | Some val =>
+                       if decide (Utils.start rsv.(rsv_slc) <= start /\
+                                  start - (Utils.start rsv.(rsv_slc)) + size <= (Utils.size rsv.(rsv_slc)))
+                       then
+                         let lsbs := (start - (Utils.start rsv.(rsv_slc))) + size in
+                         let w := split1 (lsbs - size + size) (rsv.(rsv_slc).(rs_size) -
+                                                               (lsbs - size + size))
+                                         val in
+                         let w' := split2 (lsbs - size) size w in
+                         Some  ({| rsv_slc := {| rs_reg := rsv.(rsv_slc).(rs_reg);
+                                                 rs_first_bit := start;
+                                                 rs_size := size |};
+                                   rsv_val := Some w' |})
+                       else None
+                     | None => None
+                     end
+    }.
   Obligation 1.
-  rename X into rsv. rename H into start. rename H0 into size.
-  destruct rsv; destruct rsv_val0.
-  - destruct (decide (Utils.start rsv_slc0 <= start /\
-                      start - (Utils.start rsv_slc0) + size <= (Utils.size rsv_slc0)))
-      as [[Hl1 Hl2]|].
-    + remember ((start - (Utils.start rsv_slc0)) + size) as lsbs eqn:Hlsbs.
-      destruct rsv_slc0; simpl in *.
-      assert (Hv1 : lsbs + (rs_size0 - lsbs) = rs_size0).
-      { rewrite Nat.add_comm. rewrite Nat.sub_add; auto. }
-      assert (Hv2 : lsbs - size + size = lsbs).
-      { rewrite Nat.sub_add.
-        - reflexivity.
-        - rewrite Hlsbs. apply Plus.le_plus_r. }
-      rewrite <- Hv1 in r.
-      rewrite <- Hv2 in r.
-      remember (split1 (lsbs - size + size) (rs_size0 - (lsbs - size + size)) r).
-      remember (split2 (lsbs - size) size w).
-      apply (Some ({| rsv_slc := {| rs_reg := rs_reg0;
-                                    rs_first_bit := start;
-                                    rs_size := size |}; rsv_val := Some w0 |})).
-    + apply None.
-  - apply None.
+  rewrite Nat.add_comm.
+  rewrite Nat.sub_add; auto.
+  rewrite Nat.sub_add; auto.
+  apply Plus.le_plus_r.
   Qed.
 
   Record info :=

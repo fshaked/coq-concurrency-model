@@ -285,16 +285,20 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
                                                        Arc.InsSem.rsv_val := w.(rws_val) |}))
                             (List.combine (List.seq 0 (List.length ins.(ins_reg_writes)))
                                           ins.(ins_reg_writes)))
-                  rslcs
-                  rf with
+                  rslcs rf with
           | Some (rf, nil) => Some rf
           | Some (rf, rslcs) => read_reg_slcs rslcs pref rf
           | None => None
           end
         | (iid, _, None)::_ => None
         | nil =>
-          (* FIXME: read initial value *)
-          None
+          (* FIXME: read initial value; for now read 0 *)
+          Some (List.fold_left (fun rf rslc =>
+                                  (0, 0, {| Arc.InsSem.rsv_slc := rslc;
+                                            Arc.InsSem.rsv_val :=
+                                              Some (wzero rslc.(Arc.InsSem.rs_size)) |})::rf)
+                               rslcs
+                               rf)
         end.
 
       Program Definition reg_val_of_reads_from (slc : Arc.InsSem.reg_slc)
@@ -322,7 +326,6 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
              end)
           rf (wzero slc.(Arc.InsSem.rs_size)).
       Obligation 1.
-      destruct r, rsv_slc, slc; simpl in *.
       rewrite Nat.add_comm. apply Nat.sub_add. auto.
       Qed.
     End RegisterRead.
