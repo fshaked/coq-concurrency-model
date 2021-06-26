@@ -1,13 +1,15 @@
 COQTHEORIES  := $(shell find . -iname '*.v')
 COQMODULE    := ConcModel
 
-all: proof
+all: proof main.native
+.PHONY: all
 
 %.vo: %.v coq.mk
 	$(MAKE) -f coq.mk $@
 
 proof: coq.mk
 	$(MAKE) -f coq.mk $(COQTHEORIES:.v=.vo)
+.PHONY: proof
 
 _CoqProject: $(COQTHEORIES)
 	{ echo '-R src/ $(COQMODULE)'; \
@@ -20,6 +22,14 @@ _CoqProject: $(COQTHEORIES)
 coq.mk: _CoqProject
 	coq_makefile -f $< -o $@
 
+main.native: proof
+	ocamlbuild $@
+
+clean-extracted:
+	rm -f extracted_ocaml/*
+clean: clean-extracted
+.PHONY: clean-extracted
+
 clean:
 	-$(MAKE) -f coq.mk clean
 	rm -f coq.mk coq.mk.conf _CoqProject
@@ -28,3 +38,4 @@ clean:
 	find . -name "*.vo" -type f -delete
 	find . -name "*.glob" -type f -delete
 	find . -name ".*.aux" -type f -delete
+.PHONY: clean

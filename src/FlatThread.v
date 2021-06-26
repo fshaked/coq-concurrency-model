@@ -423,7 +423,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
              let reg_reads :=
                  List.map
                    (fun rrs =>
-                      if Arc.InsSem.reg_slc_eqb rrs.(rrs_slc) rslc then
+                      if decide (rrs.(rrs_slc) = rslc) then
                         mk_reg_read_state rslc rrs.(rrs_feeding_addr) rf (Some val)
                       else rrs)
                    ins.(ins_reg_reads) in
@@ -431,7 +431,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
              let s := update_dec_instruction_state iid ins s in
              'tt <- put s
              ;; ret val
-           | None => throw Disabled
+           | None => throw (Disabled tt)
            end.
 
       Definition try_write_reg_slc (rslc : Arc.InsSem.reg_slc)
@@ -442,7 +442,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
         ;; let reg_writes :=
                List.map
                  (fun rws =>
-                    if Arc.InsSem.reg_slc_eqb rws.(rws_slc) rslc then
+                    if decide (rws.(rws_slc) = rslc) then
                       let rdf := List.concat (List.map (fun rrs => List.map fst rrs.(rrs_reads_from))
                                                        ins.(ins_reg_reads)) in
                       let mdf := match ins.(ins_mem_reads) with Some _ => true | _ => false end in
@@ -486,7 +486,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
         : itree F (bool * list instruction_id_t) :=
         (* FIXME: *)
         let iid := iid in
-        ITree.spin.
+        throw (Error "try_sat_mem_load_op_forwarding: not implemented").
 
       Definition try_sat_mem_load_op_from_storage (rid : mem_read_id_t)
         : itree F (list instruction_id_t) :=

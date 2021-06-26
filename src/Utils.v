@@ -154,7 +154,14 @@ Definition exclusive_block {E R S F}
   ;; 'tt <- trigger EndExc
   ;; ret r.
 
-CoFixpoint scheduler {E S IR R}
+Definition scheduler_helper {E S IR R}
+           (scheduler : (S -> S -> bool) ->
+                        (ktree (schedulerE S +' E) S IR) ->
+                        (R -> IR -> R) ->
+                        R ->
+                        (list (S * itree (schedulerE S +' E) IR)) ->
+                        (option S) ->
+                        itree (nondetFinE +' E) R)
            (eqb_S : S -> S -> bool)
            (spawn : ktree (schedulerE S +' E) S IR)
            (fold_results : R -> IR -> R)
@@ -225,6 +232,16 @@ CoFixpoint scheduler {E S IR R}
          end
        end
   end.
+
+CoFixpoint scheduler {E S IR R}
+           (eqb_S : S -> S -> bool)
+           (spawn : ktree (schedulerE S +' E) S IR)
+           (fold_results : R -> IR -> R)
+           (acc_result : R)
+           (its : list (S * itree (schedulerE S +' E) IR))
+           (exclusive : option S)
+  : itree (nondetFinE +' E) R :=
+  scheduler_helper scheduler eqb_S spawn fold_results acc_result its exclusive.
 
 Section Slices.
   Class Slice (T : Type) := { start : T -> nat;

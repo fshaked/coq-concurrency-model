@@ -6,6 +6,8 @@ From Coq Require Import
 
 Import ListNotations.
 
+Open Scope string_scope.
+
 From ITree Require Import
      ITree
      ITreeFacts
@@ -47,10 +49,9 @@ Module Make (Arc : ArcSig)
     let it :=
         scheduler
           Nat.eqb
-          (fun tid => ITree.spin) (* spawn *)
-             (* The spin is unreachable.
-                TODO:   do we want to support spawning of new threads?
-                Probably not. *)
+          (fun tid => Ret (Reject tt)) (* spawn *)
+          (* TODO: do we want to support spawning of new threads?
+             Probably not. *)
           (fun 'tt _ => tt) (* fold_results *)
           tt its None in
     resum_it _ it.
@@ -72,43 +73,22 @@ Module Make (Arc : ArcSig)
                     (Thread.initial_state 1)
                     entry_locs |}.
 
-  (* Definition interp_storage {E} *)
-  (*            `{exceptE disabled -< E} *)
-  (*            `{exceptE error -< E} *)
-  (*            (iid : instruction_id_t) (tid : thread_id_t) *)
-  (*   : itree (Arc.storageE +' E) ~> stateT Storage.state (itree E) := *)
-  (*   interp_state (case_ (Storage.handle_storageE iid tid) pure_state). *)
-
-  Definition handle_disabled {E}
-    : exceptE disabled ~> itree E :=
-    fun _ e =>
-      let '(Throw Disabled) := e in
-      (* FIXME: *)
-      ITree.spin.
-
-  Definition handle_error {E}
-    : exceptE error ~> itree E :=
-    fun _ e =>
-      let '(Throw (Error msg)) := e in
-      (* FIXME: *)
-      ITree.spin.
-
   Definition handle_thread_E {E}
-             `{exceptE disabled -< E}
-             `{exceptE error -< E}
              `{stateE state -< E}
+             `{exceptE disabled -< E}
+             `{exceptE Types.error -< E}
     : wrapE Thread.E (instruction_id_t * thread_id_t) ~> itree (E) :=
     fun _ e =>
       let '(Wrap e' (iid, tid)) := e in
       let it : itree (Arc.storageE
                       +' stateE Thread.state
                       +' exceptE disabled
-                      +' exceptE error) _ :=
+                      +' exceptE Types.error) _ :=
           Thread.handle_E iid _ e' in
       let it : itree (stateE Thread.state
                       +' stateE Storage.state
                       +' exceptE disabled
-                      +' exceptE error) _ :=
+                      +' exceptE Types.error) _ :=
           (* TODO: is there a better way to do this? I tired using bimap/swap/assoc_r/etc.,
              but couldn't get it to work (also, it didn't look much better). *)
           interp
@@ -130,29 +110,60 @@ Module Make (Arc : ArcSig)
          put (s <| storage := sto_state |> <| threads := ts |>)
       ;; ret ans.
 
-  Definition interp_system {E}
-    : itree (wrapE Thread.E (instruction_id_t * thread_id_t)
-             +' exceptE disabled
-             +' exceptE error
-             +' E) ~>
-            stateT state (itree E) :=
-    fun _ it =>
-      let it := interp (bimap  handle_thread_E
-                               (id_ (exceptE disabled +' exceptE error +' E)))
-                       it in
-      let it : itree (stateE state +' exceptE disabled +' exceptE error +' E) _ :=
-          resum_it _ it in
-      let it : itree (stateE state +' E) _ :=
-          interp (bimap (id_ (stateE state))
-                        (case_ handle_disabled
-                               (case_ handle_error (id_ E)))) it in
-      run_state it.
-
   Definition run {E}
              `{nondetFinE -< E}
+             `{exceptE disabled -< E}
+             `{exceptE error -< E}
              (mem : list (thread_id_t * instruction_id_t * Arc.mem_write))
              (entry_locs : list mem_loc)
     : itree E (state * unit) :=
     let tids := List.seq 0 (List.length entry_locs) in
-    interp_system _ (denote tids) (initial_state mem entry_locs).
+    let it := interp (bimap handle_thread_E (id_ _)) (denote tids) in
+    run_state (resum_it _ it) (initial_state mem entry_locs).
+
+  Fixpoint exec_helper {R}
+           (bound : nat)
+           (it : itree (nondetFinE +' exceptE disabled +' exceptE error) R)
+           (acc : list string)
+    : R + list string :=
+    match bound with
+    | 0 => (inr ("Bound reached!"::acc))
+    | S bound =>
+      match observe it with
+      | RetF r => inr ("RET"::acc)
+      | TauF it => exec_helper bound it ("Tau"::acc)
+      | @VisF _ _ _ X o k =>
+        match o with
+        | inl1 o' =>
+          match o' in nondetFinE Y return X = Y -> _ with
+          | NondetFin n =>
+            fun pf =>
+              match Fin.of_nat 0 n with
+              | inleft i =>
+                let i := eq_rect_r (fun T => T) i pf in
+                exec_helper bound (k i) ("nondet"::acc)
+              | _ => inr ("0 is not in [Fin.t n]"::acc)
+              end
+              (* fold_left (fun acc i => *)
+              (*              match acc, Fin.of_nat i n with *)
+              (*              | None, inleft i => *)
+              (*                let i := eq_rect_r (fun T => T) i pf in *)
+              (*                exec_helper bound (k i) *)
+              (*              | _, _ => acc *)
+              (*              end) *)
+              (*           (List.seq 0 n) *)
+              (*           None *)
+          end eq_refl
+        | _ => inr ("--"::acc)
+        (* | inr1 (inl1 (Throw Disabled)) => inr ("--disabled--"::acc) *)
+        (* | inr1 (inr1 (Throw (Error msg))) => inr (msg::acc) *)
+        end
+      end
+    end.
+
+  Definition exec n (mem : list (thread_id_t * instruction_id_t * Arc.mem_write))
+             (entry_locs : list mem_loc)
+    : (state * unit) + list string :=
+    let it := run mem entry_locs in
+    exec_helper n it [].
 End Make.

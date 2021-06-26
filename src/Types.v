@@ -33,13 +33,14 @@ Require Import Decision.
    different non-det choice. It is intended that [Disabled] can only happen
    immediately after a non-det choice; and whenever there is a non-det option,
    at least one of the choices is not [Disabled]. Hence non-det options can
-   easily be pruned to not include [Disabled] deadlocks. *)
-Variant disabled : Type := Disabled : disabled.
+   easily be pruned to not include [Disabled] deadlocks.
+   NOTE: for some reason extract fails without the [unit ->]. *)
+Variant disabled : Type := Disabled : unit -> disabled.
 
 Definition guard {E} `{exceptE disabled -< E}
            (p : bool) : itree E unit :=
   if p then Ret tt
-  else throw Disabled.
+  else throw (Disabled tt).
 
 (* Indicates a bug in the model *)
 Variant error : Type := Error : string -> error.
@@ -118,25 +119,34 @@ Definition mem_slc_val_of_nat (val : nat) (size : nat) : mem_slc_val :=
     (List.seq 0 size).
 
 Module Type InsSemCoreSig.
-  Variable reg : Type.
-  Variable reg_eqb : reg -> reg -> bool.
-  Variable reg_size : reg -> nat. (* Size in bits *)
+  Parameter reg : Type.
+  Context `{decision_reg_eq: forall (m n : reg), Decision (m = n)}.
+  Parameter reg_size : reg -> nat. (* Size in bits *)
 
   (* TODO: The Arm ARM pseudocode passes this kind of attributes when doing the
   actuall memory access (e.g., AArch64.MemSingle), but the concurrency model
   needs this information earlier. *)
-  Variable mem_read_kind : Type.
-  Variable mem_write_kind : Type.
+  Parameter mem_read_kind : Type.
+  Parameter mem_write_kind : Type.
 
-  Variable ast : Type.
+  Parameter ast : Type.
 End InsSemCoreSig.
 
 Module InsSemCoreFacts (Core : InsSemCoreSig).
-  (* `(i,s)` represents all the bits between `i` and `i+s`, including `i` but not
-  including `i+s`. *)
+  Export Core.
+
   Record reg_slc := { rs_reg : Core.reg;
                       rs_first_bit : nat;
                       rs_size : nat }.
+
+  #[global] Instance decide_reg_slc_eq : forall (m n : reg_slc), Decision (m = n).
+  Proof.
+    intros. unfold Decision.
+    destruct m, n.
+    destruct (Core.decision_reg_eq rs_reg0 rs_reg1), (decide (rs_first_bit0 = rs_first_bit1)), (decide (rs_size0 = rs_size1));
+      try (subst; left; reflexivity);
+      try (right; unfold not; intros; injection H; intros; auto).
+  Qed.
 
   Instance slice_reg_slc : Slice reg_slc :=
     { start := rs_first_bit;
@@ -145,30 +155,15 @@ Module InsSemCoreFacts (Core : InsSemCoreSig).
                                              rs_first_bit := start;
                                              rs_size := size |}) }.
 
-  Definition reg_slc_eqb (s1 s2 : reg_slc) : bool :=
-    Core.reg_eqb s1.(rs_reg) s2.(rs_reg) &&
-    Nat.eqb s1.(rs_first_bit) s2.(rs_first_bit) &&
-    Nat.eqb s1.(rs_size) s2.(rs_size).
-
   Definition reg_val := word.
   Definition reg_val_add {sz} (r1 : reg_val sz) (r2 : reg_val sz) : reg_val sz := wplus r1 r2.
   Definition reg_val_of_nat (sz n : nat) : reg_val sz := natToWord sz n.
   Definition nat_of_reg_val {sz : nat} (n : reg_val sz) : nat := wordToNat n.
   Fixpoint reg_val_of_mem_slc_val (sz : nat) (v : mem_slc_val) : reg_val sz :=
     reg_val_of_nat sz (nat_of_mem_slc_val v).
-    (* match v with *)
-    (* | nil => 0%N *)
-    (* | h::tl => ((N.of_nat h) + (N.shiftl (reg_val_of_mem_slc_val tl) 8))%N *)
-    (* end. *)
   Fixpoint mem_slc_val_of_reg_val {sz : nat} (n : reg_val sz)
     : mem_slc_val :=
     mem_slc_val_of_nat (nat_of_reg_val n) (sz / 8).
-    (* let byte_mask := ((2 ^ 8) - 1)%N in *)
-    (* match size with *)
-    (* | O => nil *)
-    (* | S size => *)
-    (*   N.to_nat (N.land byte_mask n) :: mem_slc_val_of_reg_val (N.shiftr n 8) size *)
-    (* end. *)
   Definition mem_loc_of_reg_val {sz : nat} (n : reg_val sz) : mem_loc :=  nat_of_reg_val n.
   Definition reg_val_of_mem_loc (sz : nat) (loc : mem_loc) : reg_val sz := reg_val_of_nat sz loc.
 
@@ -222,41 +217,44 @@ End InsSemCoreFacts.
 
 Module Type InsSemSig.
   Declare Module Core : InsSemCoreSig.
-  Include Core.
-  Include InsSemCoreFacts Core.
+  Module CoreFacts := InsSemCoreFacts Core.
+  Export CoreFacts.
 
-  Variable info_of_ast : ast -> info.
-  Variable denote : ktree E ast unit.
-  Variable decode : mem_slc_val -> option ast.
+  Parameter info_of_ast : ast -> info.
+  Parameter denote : ktree E ast unit.
+  Parameter decode : mem_slc_val -> option ast.
   (* FIXME: the return type has to also express branches that have no concrete
   value yet. *)
-  Variable next_pc : mem_loc -> ast -> list mem_loc.
+  Parameter next_pc : mem_loc -> ast -> list mem_loc.
 End InsSemSig.
 
 Module Type ArcCoreSig.
   Declare Module InsSem : InsSemSig.
+  Export InsSem.
 
   (** InsSem-Thread interface *)
 
-  Variable mem_read_kind_of_ast : InsSem.ast -> InsSem.mem_read_kind.
-  Variable mem_write_kind_of_ast : InsSem.ast -> InsSem.mem_write_kind.
+  Parameter mem_read_kind_of_ast : ast -> mem_read_kind.
+  Parameter mem_write_kind_of_ast : ast -> mem_write_kind.
 
-  Variable split_load_mem_slc : InsSem.ast -> mem_slc -> list mem_slc.
-  Variable split_store_mem_slc_val : InsSem.ast -> mem_slc -> mem_slc_val ->
+  Parameter split_load_mem_slc : ast -> mem_slc -> list mem_slc.
+  Parameter split_store_mem_slc_val : ast -> mem_slc -> mem_slc_val ->
                                      list (mem_slc * mem_slc_val).
 End ArcCoreSig.
 
 Module ArcCoreFacts (ArcCore : ArcCoreSig).
+  Export ArcCore.
+
   Record mem_read : Type :=
     mk_mem_read { read_id : mem_read_id_t;
                   read_footprint : mem_slc;
-                  read_kind : ArcCore.InsSem.mem_read_kind }.
+                  read_kind : mem_read_kind }.
 
   Record _mem_write : Type :=
     mk_mem_write { write_id : mem_write_id_t;
                    write_footprint : mem_slc;
                    write_val : mem_slc_val;
-                   write_kind : ArcCore.InsSem.mem_write_kind }.
+                   write_kind : mem_write_kind }.
   Definition mem_write := _mem_write.
 
   Definition mem_reads_from : Type := list ((thread_id_t * instruction_id_t * mem_write_id_t) *
@@ -271,24 +269,25 @@ End ArcCoreFacts.
 
 Module Type ArcSig.
   Declare Module Core : ArcCoreSig.
-  Include Core.
-  Include ArcCoreFacts Core.
+  Module CoreFacts := ArcCoreFacts Core.
+  Export CoreFacts.
 End ArcSig.
 
-
 Module Type ThreadSig (Arc : ArcSig).
-  Variable state : Type.
-  Variable initial_state : instruction_id_t -> mem_loc -> state.
+  Export Arc.
 
-  Variable E : Type -> Type.
-  Variable denote : forall (F : Type -> Type)
+  Parameter state : Type.
+  Parameter initial_state : instruction_id_t -> mem_loc -> state.
+
+  Parameter E : Type -> Type.
+  Parameter denote : forall (F : Type -> Type)
                       `{HasWrapThreadIID: wrapE E instruction_id_t -< F}
                       `{HasNondetFin: nondetFinE -< F},
       ktree F instruction_id_t (result unit unit).
   Arguments denote {F HasWrapThreadIID HasNondetFin}.
 
-  Variable handle_E : forall (F : Type -> Type)
-                        `{HasStorage: Arc.storageE -< F}
+  Parameter handle_E : forall (F : Type -> Type)
+                        `{HasStorage: storageE -< F}
                         `{HasState: stateE state -< F}
                         `{HasExceptDisabled: exceptE disabled -< F}
                         `{HasExceptError: exceptE error -< F},
@@ -297,13 +296,15 @@ Module Type ThreadSig (Arc : ArcSig).
 End ThreadSig.
 
 Module Type StorageSig (Arc : ArcSig).
-  Variable state : Type.
-  Variable initial_state : list (thread_id_t * instruction_id_t * Arc.mem_write) -> state.
-  Variable handle_storageE : forall (E : Type -> Type)
+  Export Arc.
+
+  Parameter state : Type.
+  Parameter initial_state : list (thread_id_t * instruction_id_t * mem_write) -> state.
+  Parameter handle_storageE : forall (E : Type -> Type)
                                `{HasState: stateE state -< E}
                                `{HasExceptDisabled: exceptE disabled -< E}
                                `{HasExceptError: exceptE error -< E},
                              instruction_id_t -> thread_id_t ->
-                             Arc.storageE ~> itree E.
+                             storageE ~> itree E.
   Arguments handle_storageE {E HasState HasExceptDisabled HasExceptError}.
 End StorageSig.
