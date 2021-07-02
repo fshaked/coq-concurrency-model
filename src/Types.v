@@ -108,11 +108,6 @@ Definition mem_slc_val_of_reads_from {T}
     Some (List.map (fun b => match b with Some b => b | None => 0 end) bytes)
   else None.
 
-Definition nat_of_mem_slc_val (val : mem_slc_val) : nat :=
-  List.fold_left
-    (fun acc b => (Nat.shiftl acc 8) + b)
-    (List.rev val) 0.
-
 Definition mem_slc_val_of_nat (val : nat) (size : nat) : mem_slc_val :=
   List.map
     (fun off => Nat.land (2 ^ 8 - 1) (Nat.shiftr val (8 * off)))
@@ -159,9 +154,12 @@ Module InsSemCoreFacts (Core : InsSemCoreSig).
   Definition reg_val_add {sz} (r1 : reg_val sz) (r2 : reg_val sz) : reg_val sz := wplus r1 r2.
   Definition reg_val_of_nat (sz n : nat) : reg_val sz := natToWord sz n.
   Definition nat_of_reg_val {sz : nat} (n : reg_val sz) : nat := wordToNat n.
-  Fixpoint reg_val_of_mem_slc_val (sz : nat) (v : mem_slc_val) : reg_val sz :=
-    reg_val_of_nat sz (nat_of_mem_slc_val v).
-  Fixpoint mem_slc_val_of_reg_val {sz : nat} (n : reg_val sz)
+  Definition reg_val_of_mem_slc_val (sz : nat) (v : mem_slc_val) : reg_val sz :=
+    List.fold_left
+      (fun w b => (w ^<< 8) ^| (natToWord sz b))%word
+      (List.rev v)
+      (Word.wzero sz).
+  Definition mem_slc_val_of_reg_val {sz : nat} (n : reg_val sz)
     : mem_slc_val :=
     mem_slc_val_of_nat (nat_of_reg_val n) (sz / 8).
   Definition mem_loc_of_reg_val {sz : nat} (n : reg_val sz) : mem_loc :=  nat_of_reg_val n.
@@ -212,7 +210,7 @@ Module InsSemCoreFacts (Core : InsSemCoreSig).
   | MemEWriteFP : mem_slc -> memE unit
   | MemEWriteVal : mem_slc_val -> memE unit.
 
-  Definition E := (regE +' memE).
+  Definition insSemE := (regE +' memE).
 End InsSemCoreFacts.
 
 Module Type InsSemSig.
@@ -221,7 +219,7 @@ Module Type InsSemSig.
   Export CoreFacts.
 
   Parameter info_of_ast : ast -> info.
-  Parameter denote : ktree E ast unit.
+  Parameter denote : ktree insSemE ast unit.
   Parameter decode : mem_slc_val -> option ast.
   (* FIXME: the return type has to also express branches that have no concrete
   value yet. *)
@@ -280,19 +278,24 @@ Module Type ThreadSig (Arc : ArcSig).
   Parameter initial_state : instruction_id_t -> mem_loc -> state.
 
   Parameter E : Type -> Type.
+  Context `{showable_E: forall A, Showable (E A)}.
+
   Parameter denote : forall (F : Type -> Type)
                       `{HasWrapThreadIID: wrapE E instruction_id_t -< F}
-                      `{HasNondetFin: nondetFinE -< F},
+                      `{HasNondetFin: nondetFinE -< F}
+                      `{HasDebug: debugE -< F},
       ktree F instruction_id_t (result unit unit).
-  Arguments denote {F HasWrapThreadIID HasNondetFin}.
+  Arguments denote {F HasWrapThreadIID HasNondetFin HasDebug}.
 
   Parameter handle_E : forall (F : Type -> Type)
                         `{HasStorage: storageE -< F}
                         `{HasState: stateE state -< F}
                         `{HasExceptDisabled: exceptE disabled -< F}
-                        `{HasExceptError: exceptE error -< F},
+                        `{HasExceptError: exceptE error -< F}
+                        `{HasDebug: debugE -< F},
       instruction_id_t -> E ~> itree F.
-  Arguments handle_E {F HasStorage HasState HasExceptDisabled HasExceptError}.
+  Arguments handle_E {F HasStorage HasState HasExceptDisabled HasExceptError
+                        HasDebug}.
 End ThreadSig.
 
 Module Type StorageSig (Arc : ArcSig).

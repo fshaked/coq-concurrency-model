@@ -30,8 +30,10 @@ Require Import Utils Types System
         SimpleA64InsSem FlatThread FlatStorage.
 
 Module Arc := SimpleA64InsSem.Armv8.
-Import Arc.InsSem.Notations.
+Import Arc.
+Import AArch64Notations.
 Open Scope a64_scope.
+
 Module Thread := FlatThread.Make Arc.
 Module Storage := FlatStorage.Make Arc.
 
@@ -43,25 +45,25 @@ Module Model := System.Make Arc Thread Storage.
 
 Definition unsafe_encode a :=
   let bad_encoding : Types.mem_slc_val := [0; 0; 0; 0] in
-  match Arc.InsSem.encode a with
+  match encode a with
   | Some v => v
   | None => bad_encoding
   end.
 
-Definition code_writes (c : list Arc.InsSem.ast) :=
+Definition code_writes (c : list ast) :=
   let '(ws, _, _) :=
       fold_left (fun '(ws, next_wid, next_loc) a =>
                    ((0, 0,
-                     {| Arc.write_id := next_wid;
-                        Arc.write_footprint := {| Types.location := next_loc; Types.size := 4 |};
-                        Arc.write_val := unsafe_encode a ;
-                        Arc.write_kind := Arc.InsSem.WKNormal |})::ws,
+                     {| write_id := next_wid;
+                        write_footprint := {| Types.location := next_loc; Types.size := 4 |};
+                        write_val := unsafe_encode a ;
+                        write_kind := WKNormal |})::ws,
                     next_wid + 1, next_loc + 4))
                 c
                 (nil, 0, 1000) in
   ws.
 
-Definition run_test (code : list (instruction_id_t * mem_write_id_t * Arc.mem_write))
+Definition run_test (code : list (instruction_id_t * mem_write_id_t * mem_write))
            (bound : nat) :=
   Model.exec bound code [1000].
 
@@ -71,14 +73,21 @@ Definition test_and :=
       (* 1004 : *) ; B #-1004 (* jump to 0, indicates to the model to stop fetching *)
     ].
 
+(* Compute match run_test test_and 5 with inr (_, s) => s | _ => [] end. *)
+
 From Coq Require
      Extraction
      ExtrOcamlString
-     (* ExtrOcamlNatBigInt *)
-     ExtrOcamlBasic.
+     ExtrOcamlBasic
+     ExtrOcamlNatBigInt
+     ExtrOcamlZBigInt
+     ExtrOcamlIntConv.
 
 Extraction Language OCaml.
-
+Extraction Blacklist Nat List.
 Cd "extracted_ocaml".
+
+Separate Extraction ExtrOcamlIntConv.nat_of_int ExtrOcamlIntConv.int_of_nat.
 Separate Extraction run_test test_and.
+
 Cd "..".

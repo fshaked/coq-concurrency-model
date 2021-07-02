@@ -1,6 +1,8 @@
 COQTHEORIES  := $(shell find . -iname '*.v')
 COQMODULE    := ConcModel
 
+COQBIGML := $(OPAM_SWITCH_PREFIX)/.opam-switch/sources/coq/plugins/extraction/big.ml
+
 all: proof main.native
 .PHONY: all
 
@@ -22,13 +24,17 @@ _CoqProject: $(COQTHEORIES)
 coq.mk: _CoqProject
 	coq_makefile -f $< -o $@
 
-main.native: proof
-	ocamlbuild $@
+main.native main.byte main.d.byte: proof
+	mkdir -p import_coq_ml
+	cp $(COQBIGML) import_coq_ml/
+	ocamlbuild -package num $@
+
 
 clean-extracted:
 	rm -f extracted_ocaml/*
-clean: clean-extracted
+	ocamlbuild -clean
 .PHONY: clean-extracted
+clean: clean-extracted
 
 clean:
 	-$(MAKE) -f coq.mk clean

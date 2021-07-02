@@ -2,7 +2,8 @@ From Coq Require Import
      Arith.PeanoNat
      NArith.NArith
      Lists.List
-     Strings.String.
+     Strings.String
+     Strings.Ascii.
 
 Import ListNotations.
 
@@ -76,7 +77,7 @@ Module AArch64Core <: InsSemCoreSig.
   | BranchImm : word 28 -> _ast.
   Definition ast := _ast.
 
-  Module Notations.
+  Module AArch64Notations.
     Declare Scope a64_scope.
     Delimit Scope a64_scope with a64.
 
@@ -140,13 +141,13 @@ Module AArch64Core <: InsSemCoreSig.
 
     Notation "'B' # o" := (BranchImm (ZToWord 28 o))
                             (at level 10) : a64_scope.
-  End Notations.
+  End AArch64Notations.
 End AArch64Core.
 
 Module AArch64 <: InsSemSig.
   Module Core := AArch64Core.
-  Include Core.
-  Include InsSemCoreFacts AArch64Core.
+  Module CoreFacts :=  InsSemCoreFacts AArch64Core.
+  Export CoreFacts.
 
   Definition full_reg_of_reg (r : reg) : reg_slc :=
     {| rs_reg := r;
@@ -191,7 +192,7 @@ Module AArch64 <: InsSemSig.
          output_regs := nil |}
     end.
 
-  Definition read_operand (o : operand) : itree E (reg_val _) :=
+  Definition read_operand (o : operand) : itree insSemE (reg_val _) :=
     match o with
     | OpGPR r => trigger (RegERead (full_reg_of_reg (GPR r)))
     | OpImm i => Ret i
@@ -204,10 +205,11 @@ Module AArch64 <: InsSemSig.
     | LOOr => fun r1 r2 => wor r1 r2
     end.
 
-  Definition denote : ktree E ast unit :=
+  Definition denote : ktree insSemE ast unit :=
     fun ins =>
       match ins with
       | Nop => Ret tt
+
       | Load dst addr off =>
         let size := 8 in
         let addr_slc := full_reg_of_reg (GPR addr) in
@@ -219,6 +221,7 @@ Module AArch64 <: InsSemSig.
            mem_val <- trigger (MemERead mem_slc)
         ;; let reg_val := reg_val_of_mem_slc_val (size * 8) mem_val in
            trigger (RegEWrite dst_slc reg_val)
+
       | Store val addr off =>
         let addr_slc := full_reg_of_reg (GPR addr) in
         addr_val <- trigger (RegERead addr_slc)
@@ -230,11 +233,13 @@ Module AArch64 <: InsSemSig.
            val_val <- trigger (RegERead val_slc)
         ;; let mem_val := mem_slc_val_of_reg_val val_val in
            trigger (MemEWriteVal mem_val)
+
       | LogOp op dst lhs rhs =>
         lhsv <- trigger (RegERead (full_reg_of_reg (GPR lhs)))
         ;; rhsv <- read_operand rhs
         ;; let res := get_log_op op lhsv rhsv in
            trigger (RegEWrite (full_reg_of_reg (GPR dst)) res)
+
       | BranchImm off =>
         (* FIXME: *)
         Ret tt
@@ -256,84 +261,139 @@ Module AArch64 <: InsSemSig.
       | _, _ => None
       end.
 
+    Definition bools_to_bins_32
+               (b0 b1 b2 b3 b4 b5 b6 b7
+                   b8 b9 b10 b11 b12 b13 b14 b15
+                   b16 b17 b18 b19 b20 b21 b22 b23
+                   b24 b25 b26 b27 b28 b29 b30 b31 : bool) :=
+      let c b := match b with false => 0 | true => 1 end in
+      (c b31, c b30, c b29, c b28, c b27, c b26, c b25, c b24,
+       c b23, c b22, c b21, c b20, c b19, c b18, c b17, c b16,
+       c b15, c b14, c b13, c b12, c b11, c b10, c b9, c b8,
+       c b7, c b6, c b5, c b4, c b3, c b2, c b1, c b0).
+
+    Definition bools_to_bins (bs : list bool) : list nat :=
+      List.map (fun b => match b with false => 0 | true => 1 end) bs.
+
+    Variant binPat : Type :=
+    | BP0
+    | BP1
+    | BPDontCare.
+
+    Definition binPat_match (a b : binPat) : bool :=
+      match a, b with
+      | BPDontCare, _
+      | _, BPDontCare
+      | BP0, BP0
+      | BP1, BP1 => true
+      | _, _ => false
+      end.
+
+    Definition binPat_match_list (ns ms : list binPat) : bool :=
+      (List.length ns =? List.length ms) &&
+      List.forallb (fun '(n, m) => binPat_match n m) (List.combine ns ms).
+
+    Fixpoint read_binPat (s : string) : list binPat :=
+      match s with
+      | EmptyString => nil
+      | String "0" s => BP0 :: read_binPat s
+      | String "1" s => BP1 :: read_binPat s
+      | String "?" s => BPDontCare :: read_binPat s
+      | String _ s => read_binPat s
+      end.
+
+    Definition bools_to_binPats (bs : list bool) : list binPat :=
+      List.map (fun b => match b with false => BP0 | true => BP1 end) bs.
 
     Definition decode (machine_code : mem_slc_val) : option ast :=
-      match reg_val_of_mem_slc_val 32 machine_code with
-      (* NOP: [1101010100 0 00 011 0010 0000 000 11111] *)
-      | (WO~ 1~1~0~1~0~1~0~1~0~0 ~ 0 ~ 0~0 ~ 0~1~1 ~ 0~0~1~0 ~ 0~0~0~0 ~
-           0~0~0 ~ 1~1~1~1~1)%word => Some Nop
-      (* LDR (register) 64-bit, LSL-0:
-       [1(x=1) 111 0 00 01 1 Rm (option=011) (S=0) 10 Rn Rt] *)
-      | (WO~ 1~1 ~ 1~1~1 ~ 0 ~ 0~0 ~ 0~1 ~ 1 ~ Rm4~Rm3~Rm2~Rm1~Rm0 ~ 0~1~1 ~ 0
-           ~ 1~0 ~ Rn4~Rn3~Rn2~Rn1~Rn0 ~ Rt4~Rt3~Rt2~Rt1~Rt0)%word =>
-        match decode_reg Rm4 Rm3 Rm2 Rm1 Rm0,
-              decode_reg Rn4 Rn3 Rn2 Rn1 Rn0,
-              decode_reg Rt4 Rt3 Rt2 Rt1 Rt0 with
-        | Some Rm, Some Rn, Some Rt => Some (Load Rt Rn (OpGPR Rm))
-        | _, _, _ => None
-        end
-      (* LDR (immediate) unsigned offset, 64-bit: *)
-      (*  [1(x=1) 111 0 01 01 imm12 Rn Rt] *)
-      | (WO~ 1~1 ~ 1~1~1 ~ 0 ~ 0~1 ~ 0~1 ~ i11~i10~i9~i8~i7~i6~i5~i4~i3~i2~i1~i0
-           ~ Rn4~Rn3~Rn2~Rn1~Rn0 ~ Rt4~Rt3~Rt2~Rt1~Rt0)%word =>
-        match decode_reg Rn4 Rn3 Rn2 Rn1 Rn0,
-              decode_reg Rt4 Rt3 Rt2 Rt1 Rt0 with
-        | Some Rn, Some Rt =>
-          let imm12 := WS i0 (WS i1 (WS i2 (WS i3 (WS i4 (WS i5 (WS i6 (WS i7
-                      (WS i8 (WS i9 (WS i10 (WS i11 WO))))))))))) in
-          let offset := ((zext imm12 _) ^<< 3)%word in
-          Some (Load Rt Rn (OpImm offset))
-        | _, _ => None
-        end
-      (* STR (register) 64-bit, LSL-0: *)
-      (*  [1(x=1) 111 0 00 00 1 Rm (option=011) (S=0) 10 Rn Rt] *)
-      | (WO~ 1~1 ~ 1~1~1 ~ 0 ~ 0~0 ~ 0~0 ~ 1 ~ Rm4~Rm3~Rm2~Rm1~Rm0 ~ 0~1~1 ~ 0
-           ~ 1~0 ~ Rn4~Rn3~Rn2~Rn1~Rn0 ~ Rt4~Rt3~Rt2~Rt1~Rt0)%word =>
-        match decode_reg Rm4 Rm3 Rm2 Rm1 Rm0,
-              decode_reg Rn4 Rn3 Rn2 Rn1 Rn0,
-              decode_reg Rt4 Rt3 Rt2 Rt1 Rt0 with
-        | Some Rm, Some Rn, Some Rt => Some (Store Rt Rn (OpGPR Rm))
-        | _, _, _ => None
-        end
-      (* STR (immediate) unsigned offset, 64-bit: *)
-      (*  [1(x=1) 111 0 01 00 imm12 Rn Rt] *)
-      | (WO~ 1~1 ~ 1~1~1 ~ 0 ~ 0~1 ~ 0~0 ~ i11~i10~i9~i8~i7~i6~i5~i4~i3~i2~i1~i0
-           ~ Rn4~Rn3~Rn2~Rn1~Rn0 ~ Rt4~Rt3~Rt2~Rt1~Rt0)%word =>
-        match decode_reg Rn4 Rn3 Rn2 Rn1 Rn0,
-              decode_reg Rt4 Rt3 Rt2 Rt1 Rt0 with
-        | Some Rn, Some Rt =>
-          let imm12 := WS i0 (WS i1 (WS i2 (WS i3 (WS i4 (WS i5 (WS i6 (WS i7
-                       (WS i8 (WS i9 (WS i10 (WS i11 WO))))))))))) in
-          let offset := ((zext imm12 _) ^<< 3)%word in
-          Some (Store Rt Rn (OpImm offset))
-        | _, _ => None
-        end
-      (* AND/EOR/ORR (shifted register), 64-bit, LSL-0: *)
-      (*  [(sf=1) opc 01010 (shift=00) (N=0) Rm (imm6=000000) Rn Rd] *)
-      | (WO~ 1 ~ opc1~opc0 ~ 0~1~0~1~0 ~ 0~0 ~ 0 ~ Rm4~Rm3~Rm2~Rm1~Rm0 ~ 0~0~0~0~0~0
-           ~ Rn4~Rn3~Rn2~Rn1~Rn0 ~ Rd4~Rd3~Rd2~Rd1~Rd0)%word =>
-        match decode_log_op opc1 opc0,
-              decode_reg Rm4 Rm3 Rm2 Rm1 Rm0,
-              decode_reg Rn4 Rn3 Rn2 Rn1 Rn0,
-              decode_reg Rd4 Rd3 Rd2 Rd1 Rd0 with
-        | Some op, Some Rm, Some Rn, Some Rd => Some (LogOp op Rd Rn (OpGPR Rm))
-        | _, _, _, _ => None
-        end
-      (* TODO: AND (immediate), 64-bit: *)
-      (*  [(sf=1) 00 100100 N immr imms Rn Rd] *)
-      (* B: *)
-      (*    [(op=0) 00101 imm26] *)
-      | (WO~ 0 ~ 0~0~1~0~1 ~ i25~i24~i23~i22~i21~i20~
-           i19~i18~i17~i16~i15~i14~i13~i12~i11~i10~
-           i9~i8~i7~i6~i5~i4~i3~i2~i1~i0)%word =>
-        let imm26 :=
-            WS i0 (WS i1 (WS i2 (WS i3 (WS i4 (WS i5 (WS i6 (WS i7
-            (WS i8 (WS i9 (WS i10 (WS i11 (WS i12 (WS i13 (WS i14 (WS i15
-            (WS i16 (WS i17 (WS i18 (WS i19 (WS i20 (WS i21 (WS i22 (WS i23
-            (WS i24 (WS i25 WO))))))))))))))))))))))))) in
-        let offset := ((sext imm26 _) ^<< 2)%word in
-        Some (BranchImm offset)
-      (* FIXME: *)
+      match reg_val_of_mem_slc_val 32 machine_code return option ast with
+      | WS b0 (WS b1 (WS b2 (WS b3 (WS b4 (WS b5 (WS b6 (WS b7
+        (WS b8 (WS b9 (WS b10 (WS b11 (WS b12 (WS b13 (WS b14 (WS b15
+        (WS b16 (WS b17 (WS b18 (WS b19 (WS b20 (WS b21 (WS b22 (WS b23
+        (WS b24 (WS b25 (WS b26 (WS b27 (WS b28 (WS b29 (WS b30 (WS b31 WO
+              ))))))))))))))))))))))))))))))) =>
+        (* let '(b31, b30, b29, b28, b27, b26, b25, b24, *)
+        (*       b23, b22, b21, b20, b19, b18, b17, b16, *)
+        (*       b15, b14, b13, b12, b11, b10, b9, b8, *)
+        (*       b7, b6, b5, b4, b3, b2, b1, b0) := *)
+        (*     bools_to_bins_32 b0 b1 b2 b3 b4 b5 b6 b7 *)
+        (*                      b8 b9 b10 b11 b12 b13 b14 b15 *)
+        (*                      b16 b17 b18 b19 b20 b21 b22 b23 *)
+        (*                      b24 b25 b26 b27 b28 b29 b30 b31 in *)
+        let bs := bools_to_binPats
+                    [b31;b30;b29;b28;b27;b26;b25;b24;
+                    b23;b22;b21;b20;b19;b18;b17;b16;
+                    b15;b14;b13;b12;b11;b10;b9;b8;
+                    b7;b6;b5;b4;b3;b2;b1;b0] in
+        if binPat_match_list bs (read_binPat "1101010100 0 00 011 0010 0000 000 11111") then
+          (* NOP: [1101010100 0 00 011 0010 0000 000 11111] *)
+          Some Nop
+        else if binPat_match_list bs (read_binPat "11 111 0 00 01 1 ????? 011 0 10 ????? ?????") then
+               (* LDR (register) 64-bit, LSL-0: *)
+               (*  [1(x=1) 111 0 00 01 1 Rm (option=011) (S=0) 10 Rn Rt] *)
+               match decode_reg b20 b19 b18 b17 b16,
+                     decode_reg b9 b8 b7 b6 b5,
+                     decode_reg b4 b3 b2 b1 b0 with
+               | Some Rm, Some Rn, Some Rt => Some (Load Rt Rn (OpGPR Rm))
+               | _, _, _ => None
+               end
+        else if binPat_match_list bs (read_binPat "11 111 0 01 01 ???????????? ????? ?????") then
+               (* LDR (immediate) unsigned offset, 64-bit: *)
+               (*  [1(x=1) 111 0 01 01 imm12 Rn Rt] *)
+               match decode_reg b9 b8 b7 b6 b5,
+                     decode_reg b4 b3 b2 b1 b0 with
+               | Some Rn, Some Rt =>
+                 let imm12 := WS b10 (WS b11 (WS b12 (WS b13 (WS b14 (WS b15 (WS b16 (WS b17
+                              (WS b18 (WS b19 (WS b20 (WS b21 WO))))))))))) in
+                 let offset := ((zext imm12 _) ^<< 3)%word in
+                 Some (Load Rt Rn (OpImm offset))
+               | _, _ => None
+               end
+        else if binPat_match_list bs (read_binPat "11 111 0 00 00 1 ????? 011 0 10 ????? ?????") then
+             (* STR (register) 64-bit, LSL-0: *)
+             (*  [1(x=1) 111 0 00 00 1 Rm (option=011) (S=0) 10 Rn Rt] *)
+               match decode_reg b20 b19 b18 b17 b16,
+                     decode_reg b9 b8 b7 b6 b5,
+                     decode_reg b4 b3 b2 b1 b0 with
+               | Some Rm, Some Rn, Some Rt => Some (Store Rt Rn (OpGPR Rm))
+               | _, _, _ => None
+               end
+        else if binPat_match_list bs (read_binPat "11 111 0 01 00 ???????????? ????? ?????") then
+             (* STR (immediate) unsigned offset, 64-bit: *)
+             (*  [1(x=1) 111 0 01 00 imm12 Rn Rt] *)
+               match decode_reg b9 b8 b7 b6 b5,
+                     decode_reg b4 b3 b2 b1 b0 with
+               | Some Rn, Some Rt =>
+                 let imm12 := WS b10 (WS b11 (WS b12 (WS b13 (WS b14 (WS b15 (WS b16 (WS b17
+                              (WS b18 (WS b19 (WS b20 (WS b21 WO))))))))))) in
+                 let offset := ((zext imm12 _) ^<< 3)%word in
+                 Some (Store Rt Rn (OpImm offset))
+               | _, _ => None
+               end
+        else if binPat_match_list bs (read_binPat "1 ?? 01010 00 0 ????? 000000 ????? ?????") then
+             (* AND/EOR/ORR (shifted register), 64-bit, LSL-0: *)
+             (*  [(sf=1) opc 01010 (shift=00) (N=0) Rm (imm6=000000) Rn Rd] *)
+               match decode_log_op b30 b29,
+                     decode_reg b20 b19 b18 b17 b16,
+                     decode_reg b9 b8 b7 b6 b5,
+                     decode_reg b4 b3 b2 b1 b0 with
+               | Some op, Some Rm, Some Rn, Some Rd => Some (LogOp op Rd Rn (OpGPR Rm))
+               | _, _, _, _ => None
+               end
+        (* TODO: AND (immediate), 64-bit: *)
+        (*  [(sf=1) 00 100100 N immr imms Rn Rd] *)
+        else if binPat_match_list bs (read_binPat "0 00101 ?????????? ?????????? ??????") then
+               (* B: *)
+               (*    [(op=0) 00101 imm26] *)
+               let imm26 :=
+                   WS b0 (WS b1 (WS b2 (WS b3 (WS b4 (WS b5 (WS b6 (WS b7
+                   (WS b8 (WS b9 (WS b10 (WS b11 (WS b12 (WS b13 (WS b14 (WS b15
+                   (WS b16 (WS b17 (WS b18 (WS b19 (WS b20 (WS b21 (WS b22 (WS b23
+                   (WS b24 (WS b25 WO))))))))))))))))))))))))) in
+               let offset := ((sext imm26 _) ^<< 2)%word in
+               Some (BranchImm offset)
+        (* FIXME: *)
+        else None
       | _ => None
       end.
   End Decode.
@@ -472,21 +532,22 @@ End AArch64.
 
 Module Armv8Core <: ArcCoreSig.
   Module InsSem := AArch64.
+  Export InsSem.
 
-  Definition mem_read_kind_of_ast (a : InsSem.ast) : InsSem.mem_read_kind :=
+  Definition mem_read_kind_of_ast (a : ast) : mem_read_kind :=
     (* FIXME: *)
-    InsSem.RKNormal.
+    RKNormal.
 
-  Definition mem_write_kind_of_ast (a : InsSem.ast) : InsSem.mem_write_kind :=
+  Definition mem_write_kind_of_ast (a : ast) : mem_write_kind :=
     (* FIXME: *)
-    InsSem.WKNormal.
+    WKNormal.
 
-  Definition split_load_mem_slc (a : InsSem.ast) (slc : mem_slc)
+  Definition split_load_mem_slc (a : ast) (slc : mem_slc)
     : list mem_slc :=
     (* FIXME: *)
     [slc].
 
-  Definition split_store_mem_slc_val (a : InsSem.ast) (slc : mem_slc) (val : mem_slc_val)
+  Definition split_store_mem_slc_val (a : ast) (slc : mem_slc) (val : mem_slc_val)
     : list (mem_slc * mem_slc_val) :=
     (* FIXME: *)
     [(slc, val)].
@@ -494,6 +555,6 @@ End Armv8Core.
 
 Module Armv8 <: ArcSig.
   Module Core := Armv8Core.
-  Include Core.
-  Include ArcCoreFacts Core.
+  Module CoreFacts :=  ArcCoreFacts Core.
+  Export CoreFacts.
 End Armv8.

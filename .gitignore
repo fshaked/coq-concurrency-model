@@ -8,3 +8,11 @@ _CoqProject
 coq.mk
 coq.mk.conf
 .coqdeps.d
+
+extracted_ocaml
+import_coq_ml
+
+_build
+main.byte
+main.d.byte
+main.native
