@@ -64,26 +64,45 @@ Definition instruction_id_t := Utils.id_t.
 Definition mem_read_id_t := Utils.id_t.
 Definition mem_write_id_t := Utils.id_t.
 
-Definition mem_loc : Type := nat.
+Variant mem_loc : Type := MemLoc : nat -> mem_loc.
+Definition mem_loc_to_nat (l : mem_loc) : nat := let '(MemLoc n) := l in n.
+
+Instance showable_mem_loc : Showable mem_loc :=
+  { show := fun '(MemLoc n) => show (Hex n) }.
+
 Record mem_slc : Type :=
   mk_mem_slc { location : mem_loc;
                size : nat (* in bytes *) }.
+
+Local Open Scope string_scope.
+Instance showable_mem_slc : Showable mem_slc :=
+  { show :=
+      fun s =>
+        let range := match s.(size) with
+                     | 0 => "[?]" (* this case should be unreachable *)
+                     | 1 => ""
+                     | S n => "[" ++ show (Nat.to_uint n) ++ ":0]"
+                     end in
+        show s.(location) ++ range
+  }.
+Close Scope string_scope.
+
 (* [mem_slc_val] is a list of byte values, head is least significant. *)
 Definition mem_slc_val : Type := list nat.
 
 Instance slice_mem_slc : Slice mem_slc :=
-  { start := location;
+  { start := fun s => mem_loc_to_nat s.(location);
     size := size;
-    sub_slice := fun s start size => Some ({| location := start;
+    sub_slice := fun s start size => Some ({| location := (MemLoc start);
                                            size := size |}) }.
 
 Instance slice_mem_slc_val : Slice (mem_slc * mem_slc_val) :=
-  { start := fun '(s, _) => s.(location);
+  { start := fun '(s, _) => mem_loc_to_nat s.(location);
     size := fun '(s, _) => s.(size);
     sub_slice := fun '(s, v) start size =>
-                   let s' := {| location := start;
+                   let s' := {| location := MemLoc start;
                                 size := size |} in
-                   let v' := List.firstn size (List.skipn (start - s.(location)) v) in
+                   let v' := List.firstn size (List.skipn (start - (mem_loc_to_nat s.(location))) v) in
                    Some (s', v') }.
 
 Fixpoint mem_slc_val_of_reads_from_helper {T}
@@ -95,7 +114,7 @@ Fixpoint mem_slc_val_of_reads_from_helper {T}
   | (_, (s, v))::vals =>
     let val :=
         List.fold_left (fun val '(i, b) => list_replace_nth i (Some b) val)
-                       (List.combine (List.seq (s.(location) - slc.(location)) s.(size)) v)
+                       (List.combine (List.seq ((mem_loc_to_nat s.(location)) - (mem_loc_to_nat slc.(location))) s.(size)) v)
                        val in
     mem_slc_val_of_reads_from_helper slc vals val
   end.
@@ -115,24 +134,43 @@ Definition mem_slc_val_of_nat (val : nat) (size : nat) : mem_slc_val :=
 
 Module Type InsSemCoreSig.
   Parameter reg : Type.
-  Context `{decision_reg_eq: forall (m n : reg), Decision (m = n)}.
+  Context `{showable_reg : Showable reg}.
+  Context `{decision_reg_eq : forall (m n : reg), Decision (m = n)}.
   Parameter reg_size : reg -> nat. (* Size in bits *)
 
   (* TODO: The Arm ARM pseudocode passes this kind of attributes when doing the
   actuall memory access (e.g., AArch64.MemSingle), but the concurrency model
   needs this information earlier. *)
   Parameter mem_read_kind : Type.
+  Context `{showable_mem_read_kind : Showable mem_read_kind}.
   Parameter mem_write_kind : Type.
+  Context `{showable_mem_write_kind : Showable mem_write_kind}.
 
   Parameter ast : Type.
+  Context `{showable_ast : Showable ast}.
 End InsSemCoreSig.
 
 Module InsSemCoreFacts (Core : InsSemCoreSig).
   Export Core.
+  Existing Instance Core.showable_reg.
 
   Record reg_slc := { rs_reg : Core.reg;
                       rs_first_bit : nat;
                       rs_size : nat }.
+
+  Local Open Scope string_scope.
+  Instance showable_reg_slc : Showable reg_slc :=
+    { show :=
+        fun s =>
+          let range := (* msb:lsb *)
+              match s.(rs_size) with
+              | 0 => "?" (* this case should not be reachable *)
+              | 1 => show (Nat.to_uint s.(rs_first_bit))
+              | S n => show (Nat.to_uint (s.(rs_first_bit) + n)) ++ ":" ++ show (Nat.to_uint s.(rs_first_bit))
+              end in
+          show s.(rs_reg) ++ "<" ++ range ++ ">"
+    }.
+  Close Scope string_scope.
 
   #[global] Instance decide_reg_slc_eq : forall (m n : reg_slc), Decision (m = n).
   Proof.
@@ -151,6 +189,7 @@ Module InsSemCoreFacts (Core : InsSemCoreSig).
                                              rs_size := size |}) }.
 
   Definition reg_val := word.
+
   Definition reg_val_add {sz} (r1 : reg_val sz) (r2 : reg_val sz) : reg_val sz := wplus r1 r2.
   Definition reg_val_of_nat (sz n : nat) : reg_val sz := natToWord sz n.
   Definition nat_of_reg_val {sz : nat} (n : reg_val sz) : nat := wordToNat n.
@@ -162,11 +201,22 @@ Module InsSemCoreFacts (Core : InsSemCoreSig).
   Definition mem_slc_val_of_reg_val {sz : nat} (n : reg_val sz)
     : mem_slc_val :=
     mem_slc_val_of_nat (nat_of_reg_val n) (sz / 8).
-  Definition mem_loc_of_reg_val {sz : nat} (n : reg_val sz) : mem_loc :=  nat_of_reg_val n.
-  Definition reg_val_of_mem_loc (sz : nat) (loc : mem_loc) : reg_val sz := reg_val_of_nat sz loc.
+  Definition mem_loc_of_reg_val {sz : nat} (n : reg_val sz) : mem_loc :=  MemLoc (nat_of_reg_val n).
+  Definition reg_val_of_mem_loc (sz : nat) (loc : mem_loc) : reg_val sz := reg_val_of_nat sz (mem_loc_to_nat loc).
 
   Record reg_slc_val := { rsv_slc : reg_slc;
                           rsv_val : option (reg_val rsv_slc.(rs_size)) }.
+
+  Local Open Scope string_scope.
+  Instance showable_reg_slc_val : Showable reg_slc_val :=
+    { show :=
+        fun s => show s.(rsv_slc) ++ " = " ++
+                               match s.(rsv_val) with
+                               | Some v => show v
+                               | None => "?"
+                               end
+    }.
+  Close Scope string_scope.
 
   Program Instance slice_reg_slc_val : Slice reg_slc_val :=
     { start := fun s => start s.(rsv_slc);
@@ -242,6 +292,8 @@ End ArcCoreSig.
 
 Module ArcCoreFacts (ArcCore : ArcCoreSig).
   Export ArcCore.
+  Existing Instance ArcCore.InsSem.Core.showable_mem_read_kind.
+  Existing Instance ArcCore.InsSem.Core.showable_mem_write_kind.
 
   Record mem_read : Type :=
     mk_mem_read { read_id : mem_read_id_t;
@@ -255,6 +307,11 @@ Module ArcCoreFacts (ArcCore : ArcCoreSig).
                    write_kind : mem_write_kind }.
   Definition mem_write := _mem_write.
 
+  Instance showable_mem_write : Showable mem_write :=
+    { show :=
+        fun w =>
+          (show w.(write_footprint) ++ " = " ++ show (List.rev (List.map Hex w.(write_val))) ++ "(" ++ show w.(write_kind) ++ ")")%string
+    }.
   Definition mem_reads_from : Type := list ((thread_id_t * instruction_id_t * mem_write_id_t) *
                                             (mem_slc * mem_slc_val)).
 
@@ -275,6 +332,7 @@ Module Type ThreadSig (Arc : ArcSig).
   Export Arc.
 
   Parameter state : Type.
+  Context `{showable_state: Showable state}.
   Parameter initial_state : instruction_id_t -> mem_loc -> state.
 
   Parameter E : Type -> Type.
@@ -302,7 +360,9 @@ Module Type StorageSig (Arc : ArcSig).
   Export Arc.
 
   Parameter state : Type.
+  Context `{showable_state: Showable state}.
   Parameter initial_state : list (thread_id_t * instruction_id_t * mem_write) -> state.
+
   Parameter handle_storageE : forall (E : Type -> Type)
                                `{HasState: stateE state -< E}
                                `{HasExceptDisabled: exceptE disabled -< E}

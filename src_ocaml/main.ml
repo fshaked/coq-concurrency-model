@@ -16,6 +16,7 @@ let chars_to_string (cs : char list) : string =
 open FlatThread;;
 open System;;
 open FlatModel;;
+open Utils;;
 
 let usage_msg = "TODO"
 let verbose = ref false
@@ -27,12 +28,20 @@ let speclist =
   [("--verbose", Arg.Set verbose, "Output debug information");
    ("-b", Arg.Set_int bound, "TODO")]
 
+let print_chars_endline cs =
+  print_endline (chars_to_string cs)
+;;
+
 let main =
   Arg.parse speclist anon_fun usage_msg;
 
-  begin match FlatModel.run_test test_and (nat_of_int !bound) with
-  | Datatypes.Coq_inl _ -> print_endline "*** TODO ***"
-  | Datatypes.Coq_inr (_, s) ->
-     List.iter (fun cs -> print_endline (chars_to_string cs)) (List.rev s)
+  let test = test_ldr in
+  let (res, trace) = FlatModel.run_test test (nat_of_int !bound) in
+  List.iter print_chars_endline (List.rev trace);
+
+  begin match res with
+  | Datatypes.Coq_inl _ -> ()
+  | Datatypes.Coq_inr (s, _) ->
+     print_chars_endline (FlatModel.show_state s)
   end
 ;;

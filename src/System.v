@@ -33,6 +33,8 @@ Module Make (Arc : ArcSig)
   Export Arc.
 
   Existing Instance Thread.showable_E.
+  Existing Instance Thread.showable_state.
+  Existing Instance Storage.showable_state.
 
   Definition thread_it {E}
              `{wrapE Thread.E (instruction_id_t * thread_id_t) -< E}
@@ -68,6 +70,19 @@ Module Make (Arc : ArcSig)
 
   Instance eta_state : Settable _ :=
     settable! mk_state <storage; threads>.
+
+  Local Open Scope string_scope.
+  Instance showable_state : Showable state :=
+    { show :=
+        fun s =>
+          "-- Storage ------------------------------------------------" ++ newline ++
+          show s.(storage) ++ newline ++
+          String.concat ""
+            (List.map (fun '(tid, t) =>
+                         "-- Thread " ++ show tid ++ " ------------------------------------------------" ++ newline ++ show t)
+                      (List.combine (List.seq 0 (List.length s.(threads))) s.(threads)))
+    }.
+  Close Scope string_scope.
 
   Definition initial_state (mem : list (thread_id_t * instruction_id_t * mem_write))
              (entry_locs : list mem_loc)
@@ -140,47 +155,52 @@ Module Make (Arc : ArcSig)
                         +' exceptE error
                         +' debugE) R)
            (acc : list string)
-    : R +
-      ((itree (nondetFinE
+    : ((itree (nondetFinE
                +' exceptE disabled
                +' exceptE error
-               +' debugE) R) *
-       list string) :=
+               +' debugE) R) + R) *
+      list string :=
     match bound with
-    | 0 => inr (it, ("Bound reached!"::acc))
+    | 0 => (inl it, "Bound reached!"%string::acc)
     | S bound =>
       match observe it with
-      | RetF r => inr (it, ("*** RET ***"::acc))
-      | TauF it => exec_helper bound it acc (*("Tau"::acc)*)
+      | RetF r => (inr r, "*** RET ***"%string::acc)
+      | TauF it => exec_helper bound it acc
       | @VisF _ _ _ X o k =>
         match o with
         | inl1 o' =>
           match o' in nondetFinE Y return X = Y -> _ with
           | NondetFin n =>
             fun pf =>
-              match Fin.of_nat 0 n with
-              | inleft i =>
-                let i := eq_rect_r (fun T => T) i pf in
-                exec_helper bound (k i) acc
-              | _ => inr (it, ("0 is not in [Fin.t n]"::acc))
+              (* match Fin.of_nat 0 n with *)
+              (* | inleft i => *)
+              (*   let i := eq_rect_r (fun T => T) i pf in *)
+              (*   exec_helper bound (k i) acc *)
+              (* | _ => (inl it, "ERROR: 0 is not in [Fin.t n]"%string::acc) *)
+              (* end *)
+              match fold_left (fun '(res, acc) i =>
+                                 match res, Fin.of_nat i n with
+                                 | None, inleft i =>
+                                   let i := eq_rect_r (fun T => T) i pf in
+                                   match exec_helper bound (k i) [] with
+                                   | (inl _, "--disabled--"%string::acc') => (None, "disabled >"%string::acc' ++ "<"%string::acc)
+                                   | (r, acc') => (Some (r, acc' ++ acc), [])
+                                   end
+                                 | _, _ => (res, acc)
+                                 end)
+                              (List.seq 0 n)
+                              (None, acc) with
+              | (Some res, _) => res
+              | (None, acc) => (inl it, "--disabled--"%string::("disabled NondetFin " ++ show n)%string::acc)
               end
-              (* fold_left (fun acc i => *)
-              (*              match acc, Fin.of_nat i n with *)
-              (*              | None, inleft i => *)
-              (*                let i := eq_rect_r (fun T => T) i pf in *)
-              (*                exec_helper bound (k i) *)
-              (*              | _, _ => acc *)
-              (*              end) *)
-              (*           (List.seq 0 n) *)
-              (*           None *)
           end eq_refl
-        | inr1 (inl1 (Throw (Disabled tt))) => inr (it, ("--disabled--"::acc))
-        | inr1 (inr1 (inl1 (Throw (Error msg)))) => inr (it, (msg::acc))
+        | inr1 (inl1 (Throw (Disabled tt))) => (inl it, "--disabled--"%string::acc)
+        | inr1 (inr1 (inl1 (Throw (Error msg)))) => (inl it, msg::acc)
         | inr1 (inr1 (inr1 o')) =>
           match o' in debugE Y return X = Y -> _ with
           | Debug msg => fun pf =>
                           exec_helper bound (k (eq_rect_r (fun T => T) tt pf))
-                                      (("debug: " ++ msg)::acc)
+                                      (("debug: " ++ msg)%string::acc)
           end eq_refl
         end
       end
@@ -188,7 +208,7 @@ Module Make (Arc : ArcSig)
 
   Definition exec n (mem : list (thread_id_t * instruction_id_t * mem_write))
              (entry_locs : list mem_loc)
-    : (state * unit) + (_ * list string) :=
+    : (_ + (state * unit)) * list string :=
     let it := run mem entry_locs in
     exec_helper n it [].
 End Make.

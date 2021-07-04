@@ -39,11 +39,26 @@ Module AArch64Core <: InsSemCoreSig.
   #[global] Instance decision_gpr_eq : forall (m n : gpr), Decision (m = n).
   Proof. decision_eq. Qed.
 
+  Instance showable_gpr : Showable gpr :=
+    { show :=
+        fun r =>
+          match r with
+          | R0 => "X0" | R1 => "X1" | R2 => "X2" | R3 => "X3" | R4 => "X4"
+          | R5 => "X5" | R6 => "X6" | R7 => "X7" | R8 => "X8" | R9 => "X9"
+          end%string
+    }.
+
   Variant _reg : Type :=
   | GPR : gpr -> _reg
   | PC : _reg.
   Definition reg := _reg.
 
+  Instance showable_reg : Showable reg :=
+    { show := fun r => match r with
+                    | GPR r => show r
+                    | PC => "PC"%string
+                    end
+    }.
   #[global] Instance decision_reg_eq : forall (m n : reg), Decision (m = n).
   Proof. decision_eq. Qed.
 
@@ -55,14 +70,52 @@ Module AArch64Core <: InsSemCoreSig.
 
   Variant _mem_read_kind : Type := RKNormal | RKAcquire | RKExclusive | RKAcqExc.
   Definition mem_read_kind := _mem_read_kind.
+  Instance showable_mem_read_kind : Showable mem_read_kind :=
+    { show :=
+        fun r => match r with
+              | RKNormal => "normal"
+              | RKAcquire => "acq"
+              | RKExclusive => "excl"
+              | RKAcqExc => "acq+excl"
+              end%string
+    }.
+
   Variant _mem_write_kind : Type := WKNormal | WKRelease | WKExclusive | WKRelExc.
   Definition mem_write_kind := _mem_write_kind.
+  Instance showable_mem_write_kind : Showable mem_write_kind :=
+    { show :=
+        fun w => match w with
+              | WKNormal => "normal"
+              | WKRelease => "rel"
+              | WKExclusive => "excl"
+              | WKRelExc => "rel+excl"
+              end%string
+    }.
 
   Variant operand : Type :=
   | OpGPR : gpr -> operand
   | OpImm : word 64 -> operand.
 
+  Instance showable_operand : Showable operand :=
+    { show :=
+        fun op =>
+          match op with
+          | OpGPR r => show r
+          | OpImm w => "#" ++ show (Nat.to_uint (wordToNat w))
+          end%string
+    }.
+
   Variant log_op : Type := LOAnd | LOXor | LOOr.
+
+  Instance showable_log_op : Showable log_op :=
+    { show :=
+        fun op =>
+          match op with
+          | LOAnd => "AND"
+          | LOXor => "EOR"
+          | LOOr => "ORR"
+          end%string
+    }.
 
   Variant _ast : Type :=
   (* NOP *)
@@ -74,8 +127,27 @@ Module AArch64Core <: InsSemCoreSig.
   (* op, dst, lhs, rhs *)
   | LogOp : log_op -> gpr -> gpr -> operand -> _ast
   (* offset *)
-  | BranchImm : word 28 -> _ast.
+  | BranchImm : word 28 -> _ast
+  | MovZ : gpr -> word 16 -> _ast.
   Definition ast := _ast.
+
+  Instance showable_ast : Showable ast :=
+    { show :=
+        fun a =>
+          match a with
+          | Nop => "NOP"
+          | Load dst addr off =>
+            "LDR " ++ show dst ++ ",[" ++ show addr ++ "," ++ show off ++ "]"
+          | Store val addr off =>
+            "STR " ++ show val ++ ",[" ++ show addr ++ "," ++ show off ++ "]"
+          | LogOp op dst lhs rhs =>
+            show op ++ " " ++ show dst ++ "," ++ show lhs ++ "," ++ show rhs
+          | BranchImm imm =>
+            "B #" ++ show (wordToZ imm)
+          | MovZ dst imm =>
+            "MOVZ " ++ show dst ++ ",#" ++ show (wordToNat imm)
+          end%string
+    }.
 
   Module AArch64Notations.
     Declare Scope a64_scope.
@@ -141,6 +213,9 @@ Module AArch64Core <: InsSemCoreSig.
 
     Notation "'B' # o" := (BranchImm (ZToWord 28 o))
                             (at level 10) : a64_scope.
+
+    Notation "'MOVZ' Xd , # i" := (MovZ Xd (natToWord 16 i))
+                                    (Xd custom gpr at level 2, at level 10) : a64_scope.
   End AArch64Notations.
 End AArch64Core.
 
@@ -190,6 +265,10 @@ Module AArch64 <: InsSemSig.
     | BranchImm off =>
       {| input_regs := nil;
          output_regs := nil |}
+    | MovZ dst imm =>
+      let oregs := [full_reg_of_reg (GPR dst)] in
+      {| input_regs := nil;
+         output_regs := oregs |}
     end.
 
   Definition read_operand (o : operand) : itree insSemE (reg_val _) :=
@@ -217,7 +296,7 @@ Module AArch64 <: InsSemSig.
         addr_val <- trigger (RegERead addr_slc)
         ;; off_val <- read_operand off
         ;; let loc := nat_of_reg_val (reg_val_add addr_val off_val) in
-           let mem_slc := {| location := loc; size := size |} in
+           let mem_slc := {| location := MemLoc loc; size := size |} in
            mem_val <- trigger (MemERead mem_slc)
         ;; let reg_val := reg_val_of_mem_slc_val (size * 8) mem_val in
            trigger (RegEWrite dst_slc reg_val)
@@ -227,7 +306,7 @@ Module AArch64 <: InsSemSig.
         addr_val <- trigger (RegERead addr_slc)
         ;; off_val <- read_operand off
         ;; let loc := nat_of_reg_val (reg_val_add addr_val off_val) in
-           let mem_slc := {| location := loc; size := 8 |} in
+           let mem_slc := {| location := MemLoc loc; size := 8 |} in
            'tt <- trigger (MemEWriteFP mem_slc)
         ;; let val_slc := full_reg_of_reg (GPR val) in
            val_val <- trigger (RegERead val_slc)
@@ -243,6 +322,12 @@ Module AArch64 <: InsSemSig.
       | BranchImm off =>
         (* FIXME: *)
         Ret tt
+
+      | MovZ dst imm =>
+        let dst_slc := {| rs_reg := GPR dst; rs_first_bit := 0;
+                          rs_size := 16 + (reg_size (GPR dst) - 16) |} in
+        let val := Word.zext imm _ in
+        trigger (RegEWrite dst_slc val)
       end.
 
   Notation "w '~' b" := (WS b w) (at level 7, left associativity, format "w '~' b") : word_scope.
@@ -382,7 +467,7 @@ Module AArch64 <: InsSemSig.
                end
         (* TODO: AND (immediate), 64-bit: *)
         (*  [(sf=1) 00 100100 N immr imms Rn Rd] *)
-        else if binPat_match_list bs (read_binPat "0 00101 ?????????? ?????????? ??????") then
+        else if binPat_match_list bs (read_binPat "0 00101 ??????????????????????????") then
                (* B: *)
                (*    [(op=0) 00101 imm26] *)
                let imm26 :=
@@ -392,6 +477,16 @@ Module AArch64 <: InsSemSig.
                    (WS b24 (WS b25 WO))))))))))))))))))))))))) in
                let offset := ((sext imm26 _) ^<< 2)%word in
                Some (BranchImm offset)
+        else if binPat_match_list bs (read_binPat "1 10 100101 00 ???????????????? ?????") then
+               (* MOVZ, 64-bit: *)
+               (*    [(sf=1) (opc=10) 100101 (hw=00) imm16 Rd] *)
+               let imm16 :=
+                   WS b5 (WS b6 (WS b7 (WS b8 (WS b9 (WS b10 (WS b11 (WS b12
+                   (WS b13 (WS b14 (WS b15 (WS b16 (WS b17 (WS b18 (WS b19 (WS b20 WO))))))))))))))) in
+               match decode_reg b4 b3 b2 b1 b0 with
+               | Some Rd => Some (MovZ Rd imm16)
+               | _ => None
+               end
         (* FIXME: *)
         else None
       | _ => None
@@ -515,18 +610,29 @@ Module AArch64 <: InsSemSig.
           Some (encode_word w)
         | _ => None
         end
+      | MovZ d imm =>
+        let '(Rd4, Rd3, Rd2, Rd1, Rd0) := encode_reg d in
+        match imm with
+        | WS i0 (WS i1 (WS i2 (WS i3 (WS i4 (WS i5 (WS i6 (WS i7
+          (WS i8 (WS i9 (WS i10 (WS i11 (WS i12 (WS i13 (WS i14 (WS i15 WO))))))))))))))) =>
+          let w := (WO~ 1 ~ 1~0 ~ 1~0~0~1~0~1 ~  0~0 ~
+                      i15~i14~i13~i12~i11~i10~i9~i8~i7~i6~i5~i4~i3~i2~i1~i0 ~
+                      Rd4~Rd3~Rd2~Rd1~Rd0)%word in
+          Some (encode_word w)
+        | _ => None
+        end
       end.
   End Encode.
 
   Definition  next_pc (pc : mem_loc) (a : ast) : list mem_loc :=
     match a with
     | BranchImm off =>
-      let pc := natToWord 64 pc in
+      let pc := natToWord 64 (mem_loc_to_nat pc) in
       let new_pc := wordToNat (pc ^+ (sext off _))%word in
       (* FIXME: the [new_pc = 0] case is just to make the thread stop fetching *)
       if decide (new_pc = 0) then nil
-      else [new_pc]
-    | _ => [pc + 4]
+      else [MemLoc new_pc]
+    | _ => [MemLoc (mem_loc_to_nat pc + 4)]
     end.
 End AArch64.
 

@@ -1,10 +1,13 @@
 From Coq Require Import
      Arith.PeanoNat
      NArith.NArith
+     ZArith.ZArith
+     Numbers.DecimalString
      Lists.List
      Lists.ListSet
      Strings.String
      Strings.HexString
+     Strings.BinaryString
      Morphisms
      Setoid
      RelationClasses
@@ -15,6 +18,9 @@ Import StringSyntax.
 From ExtLib Require Import
      Structures.Monads
      Data.Monads.ListMonad.
+
+From bbv Require Import Word.
+Import Word.Notations.
 
 From ITree Require Import
      ITree
@@ -40,8 +46,40 @@ Typeclasses eauto := 5.
 
 Require Import Decision.
 
-Class Showable A := { show : A -> string }.
-Instance showable_nat : Showable nat := { show := HexString.of_nat }.
+Definition newline : string := "
+".
+
+Section Showable.
+  Class Showable A := { show : A -> string }.
+
+  Local Open Scope string_scope.
+
+
+  #[global] Instance showable_uint : Showable Decimal.uint :=
+    { show := NilEmpty.string_of_uint }.
+
+  #[global] Instance showable_nat : Showable nat :=
+    { show := fun n => show (Nat.to_uint n) }.
+
+  Variant hex_nat := Hex : nat -> hex_nat.
+
+  #[global] Instance showable_hex_nat : Showable hex_nat :=
+    { show := fun '(Hex n) => HexString.of_nat n }.
+
+  #[global] Instance showable_int : Showable Decimal.int :=
+    { show := NilEmpty.string_of_int }.
+
+  #[global] Instance showable_Z : Showable Z :=
+    { show := fun z => NilEmpty.string_of_int (Z.to_int z)%Z }.
+
+  #[global] Instance showable_word : forall sz, Showable (word sz) :=
+    { show := fun w => HexString.of_N (wordToN w) }.
+
+  #[global] Instance showable_list : forall T, Showable T -> Showable (list T) :=
+    { show := fun ts =>
+                "[" ++ String.concat "; " (List.map show ts) ++ "]"
+    }.
+End Showable.
 
 Variant debugE : Type -> Type :=
 | Debug : string -> debugE unit.
@@ -84,12 +122,12 @@ Section List.
 
   Example list_find_index_0 :
     option_map (fun f => proj1_sig (Fin.to_nat f))
-               (list_find_index [1; 2; 3] (fun n => n =? 1)) = Some 0.
+               (list_find_index [1; 2; 3] (fun n => n =? 1)) = Some 0%nat.
   Proof. intros. reflexivity. Qed.
 
   Example list_find_index_1 :
     option_map (fun f => proj1_sig (Fin.to_nat f))
-               (list_find_index [1; 2; 3] (fun n => n =? 2)) = Some 1.
+               (list_find_index [1; 2; 3] (fun n => n =? 2)) = Some 1%nat.
   Proof. intros. reflexivity. Qed.
 
   Example list_find_index_miss :
@@ -114,6 +152,10 @@ Section Tree.
 
   Definition tree_map {T Y : Type} (f : T -> Y) (t : tree T) : tree Y :=
     tree_map_with_context (fun _ x _ => f x) [] t.
+
+  Fixpoint tree_to_list_preorder {T : Type} (t : tree T) : list T :=
+    let '(Tree x ts) := t in
+    x :: List.concat (List.map tree_to_list_preorder ts).
 End Tree.
 
 Definition id_t := nat.
@@ -279,20 +321,20 @@ Section Slices.
              (slc : S) (uslc : S')
     : option (option (S * list S')) :=
     if decide (start slc < start uslc + size uslc /\
-               start uslc < start slc + size slc) then
+               start uslc < start slc + size slc)%nat then
       let slc'_start := max (start slc) (start uslc) in
       let slc'_end := min ((start slc) + (size slc)) ((start uslc) + (size uslc)) in
       match sub_slice slc slc'_start (slc'_end - slc'_start) with
       | Some slc' =>
 
         match
-            (if decide (start uslc < start slc') then
+            (if decide (start uslc < start slc')%nat then
                match sub_slice uslc (start uslc) ((start slc') - (start uslc)) with
                | Some s => Some [s]
                | None => None
                end
             else Some nil),
-            (if decide (slc'_end < (start uslc) + (size uslc)) then
+            (if decide (slc'_end < (start uslc) + (size uslc))%nat then
                match sub_slice uslc slc'_end ((start uslc) + (size uslc) - slc'_end) with
                | Some s => Some [s]
                | None => None

@@ -31,6 +31,8 @@ Require Import  Decision.
 
 Module Make (Arc : ArcSig) : ThreadSig Arc.
   Export Arc.
+  Existing Instance showable_ast.
+  Existing Instance decision_reg_eq.
 
   Variant _E : Type -> Type :=
   | ThEFetchAndDecodeOrRestart : _E (list instruction_id_t * ast)
@@ -208,9 +210,19 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
                                                 of the instruction pointed by the [instruction_id_t]. *)
                           rrs_val : option (reg_val rrs_slc.(rs_size)) }.
 
+    Local Open Scope string_scope.
+    Instance showable_reg_read_state : Showable reg_read_state :=
+      { show :=
+          fun s => show s.(rrs_slc) ++ " = " ++
+                                 match s.(rrs_val) with
+                                 | Some v => show v
+                                 | None => "?"
+                                 end
+      }.
+    Close Scope string_scope.
+
     Record reg_write_state :=
-      mk_reg_write_state { rws_slc : reg_slc;
-                           rws_val : option (reg_val rws_slc.(rs_size));
+      mk_reg_write_state { rws_slc_val : reg_slc_val;
                            (* [rws_reg_data_flow] is a concatination of all the
                             [rrs_reads_from] of the instruction, when the
                             reg-write was performed. We assume that there is a
@@ -225,6 +237,8 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
                             to this reg-write. *)
                            rws_mem_data_flow : bool }.
 
+    Instance showable_reg_write_state : Showable reg_write_state :=
+      { show := fun s => show s.(rws_slc_val) }.
 
     Record mem_reads_state :=
       mk_mem_reads_state { rs_footprint : mem_slc;
@@ -235,6 +249,11 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
     Instance eta_mem_reads_state : Settable _ :=
       settable! mk_mem_reads_state <rs_footprint; rs_reads; rs_unsat_slcs; rs_reads_from>.
 
+    Instance showable_mem_reads_state : Showable mem_reads_state :=
+      { show :=
+          fun s => ""%string
+      }.
+
     Record mem_writes_state :=
       mk_mem_writes_state { ws_footprint : mem_slc;
                             ws_writes : list mem_write;
@@ -242,6 +261,11 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
 
     Instance eta_mem_writes_state : Settable _ :=
       settable! mk_mem_writes_state <ws_footprint; ws_writes; ws_has_propagated>.
+
+    Instance showable_mem_writes_state : Showable mem_writes_state :=
+      { show :=
+          fun s => ""%string
+      }.
 
     Record decoded_instruction_state :=
       mk_decoded_instruction_state {
@@ -258,6 +282,33 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
     Instance eta_decoded_instruction_state : Settable _ :=
       settable! mk_decoded_instruction_state <ins_ast; ins_reg_reads; ins_reg_writes; ins_mem_reads; ins_mem_writes; ins_finished>.
 
+    Local Open Scope string_scope.
+    Instance showable_decoded_instruction_state : Showable decoded_instruction_state :=
+      { show :=
+          fun i =>
+            ("'" ++ show i.(ins_ast) ++ "' " ++
+                                     (if i.(ins_finished) then "(finished)"
+                                      else "(in-flight)") ++ newline ++
+             match i.(ins_reg_reads) with
+             | [] => ""
+             | _ => "  reg reads: " ++ show i.(ins_reg_reads) ++ newline
+             end ++
+             match i.(ins_reg_writes) with
+             | [] => ""
+             | _ => "  reg writes: " ++ show i.(ins_reg_writes) ++ newline
+             end ++
+             match i.(ins_mem_reads) with
+             | Some rs => "  mem reads: " ++ show rs ++ newline
+             | None => ""
+             end ++
+             match i.(ins_mem_writes) with
+             | Some ws => "  mem writes: " ++ show ws ++ newline
+             | None => ""
+             end
+            )%string
+      }.
+    Close Scope string_scope.
+
     Definition initial_decoded_instruction_state
                (ast : ast)
       : decoded_instruction_state :=
@@ -265,7 +316,9 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
       {| ins_ast := ast;
          ins_reg_reads := List.map (fun '(slc, addr) => mk_reg_read_state slc addr [] None)
                                    info.(input_regs);
-         ins_reg_writes := List.map (fun slc => mk_reg_write_state slc None [] false)
+         ins_reg_writes := List.map (fun slc => mk_reg_write_state
+                                               {| rsv_slc := slc; rsv_val := None |}
+                                               [] false)
                                     info.(output_regs);
          ins_mem_reads := None;
          ins_mem_writes := None;
@@ -284,12 +337,34 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
     Instance eta_state : Settable _ :=
       settable! mk_state <next_iid; instruction_tree>.
 
-    (* Instance showable_state : Showable state := *)
-    (*   { show := *)
-    (*       fun s => *)
-    (*         let inss :=  *)
-    (*         ""%string *)
-    (*   }. *)
+    Local Open Scope string_scope.
+    Instance showable_state : Showable state :=
+      { show :=
+          fun s =>
+            let fix show_tree t :=
+                match t with
+                | Tree (iid, _, _) [] => show iid
+                | Tree (iid, _, _) [t] =>
+                  (show iid) ++ "," ++ show_tree t
+                | Tree (iid, _, _) ts =>
+                  (show iid) ++ "["
+                             ++ String.concat ";" (List.map show_tree ts)
+                             ++ "]"
+                end in
+
+            let show_ins '(iid, loc, ins) :=
+                let ins : string := match ins with
+                                    | None => "not fetched"
+                                    | Some dec_ins => show dec_ins
+                                    end in
+                show iid ++ ":[" ++ show loc ++ "] " ++ ins in
+
+            "Instruction tree: " ++ newline ++
+            "  " ++ (show_tree s.(instruction_tree)) ++ newline ++
+            "Instructions:" ++ newline ++
+            String.concat "" (List.map show_ins (tree_to_list_preorder s.(instruction_tree)))
+      }.
+    Close Scope string_scope.
 
     Definition initial_state (iid : instruction_id_t) (loc : mem_loc)
       : state :=
@@ -307,20 +382,22 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
                          end }.
 
       Fixpoint read_reg_slcs
+               (r : reg)
                (rslcs : list reg_slc)
                (pref : list instruction_state)
                (rf : list (instruction_id_t * nat * reg_slc_val))
         : option (list (instruction_id_t * nat * reg_slc_val)) :=
         match pref with
         | (iid, _, Some ins)::pref =>
-          match Utils.reads_from_slcs
-                  (List.map (fun '(i, w) => ((iid, i), {| rsv_slc := w.(rws_slc);
-                                                       rsv_val := w.(rws_val) |}))
-                            (List.combine (List.seq 0 (List.length ins.(ins_reg_writes)))
-                                          ins.(ins_reg_writes)))
-                  rslcs rf with
+          let wslcs := List.combine (List.seq 0 (List.length ins.(ins_reg_writes)))
+                                    ins.(ins_reg_writes) in
+          let wslcs := List.filter (fun '(i, w) => isTrue (w.(rws_slc_val).(rsv_slc).(rs_reg) = r))
+                                   wslcs in
+          let wslcs := List.map (fun '(i, w) => ((iid, i), w.(rws_slc_val))) wslcs in
+
+          match Utils.reads_from_slcs wslcs rslcs rf with
           | Some (rf, nil) => Some rf
-          | Some (rf, rslcs) => read_reg_slcs rslcs pref rf
+          | Some (rf, rslcs) => read_reg_slcs r rslcs pref rf
           | None => None
           end
         | (iid, _, None)::_ => None
@@ -445,14 +522,17 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
 
       Definition try_finish_instruction : itree F unit :=
         (* FIXME: check finish condition *)
-        let iid := iid in
-        ret tt.
+        s <- get
+        ;; '(pref, ins, _) <- get_dec_instruction_state iid s
+        ;; let ins := ins <| ins_finished := true |> in
+           let s := update_dec_instruction_state iid ins s in
+           put s.
 
       Definition try_read_reg_slc (rslc : reg_slc)
         : itree F (reg_val rslc.(rs_size)) :=
         s <- get
         ;; '(pref, ins, _) <- get_dec_instruction_state iid s
-        ;; match read_reg_slcs [rslc] pref [] with
+        ;; match read_reg_slcs rslc.(rs_reg) [rslc] pref [] with
            | Some rf =>
              let val := reg_val_of_reads_from rslc rf in
              let reg_reads :=
@@ -477,11 +557,12 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
         ;; let reg_writes :=
                List.map
                  (fun rws =>
-                    if decide (rws.(rws_slc) = rslc) then
+                    if decide (rws.(rws_slc_val).(rsv_slc) = rslc) then
                       let rdf := List.concat (List.map (fun rrs => List.map fst rrs.(rrs_reads_from))
                                                        ins.(ins_reg_reads)) in
                       let mdf := match ins.(ins_mem_reads) with Some _ => true | _ => false end in
-                      mk_reg_write_state rslc (Some val) rdf mdf
+                      mk_reg_write_state {| rsv_slc := rslc; rsv_val := Some val |}
+                                         rdf mdf
                     else rws)
                  ins.(ins_reg_writes) in
            let ins := ins <| ins_reg_writes := reg_writes |> in
@@ -521,7 +602,8 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
         : itree F (bool * list instruction_id_t) :=
         (* FIXME: *)
         let iid := iid in
-        throw (Error "try_sat_mem_load_op_forwarding: not implemented").
+        guard false
+        ;; ret (false, []).
 
       Definition try_sat_mem_load_op_from_storage (rid : mem_read_id_t)
         : itree F (list instruction_id_t) :=
@@ -538,7 +620,8 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
                                           "try_sat_mem_load_op_from_storage: missing rid."
         ;; rf_storage <- trigger (StERead rr unsat_slcs)
         ;; let rs := rs <| rs_unsat_slcs := list_replace_nth rid [] rs.(rs_unsat_slcs) |>
-                                                                                       <| rs_reads_from := list_replace_nth rid (rf_forward ++ rf_storage) rs.(rs_reads_from) |> in
+                        <| rs_reads_from := list_replace_nth rid (rf_forward ++ rf_storage)
+                                                             rs.(rs_reads_from) |> in
            let ins := ins <| ins_mem_reads := Some rs |> in
            (* FIXME: compute iids that need to be restarted *)
            let restarts := [] in

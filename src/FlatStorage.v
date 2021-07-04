@@ -33,6 +33,13 @@ Module Make (Arc : ArcSig) : StorageSig Arc.
 
   Instance eta_state : Settable _ := settable! mk_state <mem>.
 
+  Local Open Scope string_scope.
+  Instance showable_state : Showable state :=
+    { show :=
+        fun s => String.concat newline (List.map (fun '(_, _, w) => show w) s.(mem))
+    }.
+  Close Scope string_scope.
+
   Definition initial_state (mem : list (thread_id_t * instruction_id_t * mem_write))
     : state :=
     {| mem := mem |}.
