@@ -51,18 +51,19 @@ Definition unsafe_encode a :=
   end.
 
 Definition code_writes (c : list ast) :=
-  let '(ws, _, _) :=
-      fold_left (fun '(ws, next_wid, next_loc) a =>
+  let '(ws, _) :=
+      fold_left (fun '(ws, next_loc) a =>
                    ((0, 0,
-                     {| write_id := next_wid;
+                     {| write_id := 0;
                         write_footprint := {| Types.location := next_loc; Types.size := 4 |};
                         write_val := unsafe_encode a ;
                         write_kind := WKNormal |})::ws,
-                    next_wid + 1, MemLoc (mem_loc_to_nat next_loc + 4)))
+                    MemLoc (mem_loc_to_nat next_loc + 4)))
                 c
-                (nil, 0, MemLoc 4096) in
+                (nil, MemLoc 4096) in
   ws.
 
+(* Head of the [list nat] is MSB *)
 Definition data_writes (ds : list (nat * list nat)) :=
   List.map (fun '(loc, bytes) =>
               (0, 0, {| write_id := 0;
@@ -72,9 +73,31 @@ Definition data_writes (ds : list (nat * list nat)) :=
                         write_kind := WKNormal |}))
            ds.
 
-Definition run_test (code : list (instruction_id_t * mem_write_id_t * mem_write))
-           (bound : nat) : ((_ + _) * _) :=
-  Model.exec bound code [MemLoc 4096].
+Section NondetCallbacks.
+  Definition first_not_disabled : Model.nondet_callback :=
+    fun n c =>
+      match fold_left (fun 'res i =>
+                         match res, Fin.of_nat i n with
+                         | None, inleft i =>
+                           match c i with
+                           | Model.ERDisabled => None
+                           | res => Some res
+                           end
+                         | _, _ => res
+                         end)
+                      (List.seq 0 n)
+                      None with
+      | Some res => res
+      | None => Model.ERDisabled
+      end.
+End NondetCallbacks.
+
+Definition run_test (ncall : Model.nondet_callback)
+           (dcall : Model.debug_callback)
+           (mem : list (instruction_id_t * mem_write_id_t * mem_write))
+           (bound : nat)
+  : Model.exec_result :=
+  Model.exec ncall dcall bound mem [MemLoc 4096].
 
 Existing Instance Model.showable_state.
 
@@ -103,8 +126,6 @@ Definition test_ldr :=
                 (* [0x1008] *) ; B #-4104 (* jump to 0, indicates to the model to stop fetching *)
               ]%a64.
 
-(* Compute match run_test test_and 5 with inr (_, s) => s | _ => [] end. *)
-
 From Coq Require
      Extraction
      ExtrOcamlBasic
@@ -119,7 +140,7 @@ Cd "extracted_ocaml".
 
 Separate Extraction
          ExtrOcamlIntConv.nat_of_int ExtrOcamlIntConv.int_of_nat
-         run_test show_state
+         run_test show_state first_not_disabled
          test_and test_str test_ldr.
 
 Cd "..".

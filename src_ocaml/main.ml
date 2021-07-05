@@ -35,13 +35,18 @@ let print_chars_endline cs =
 let main =
   Arg.parse speclist anon_fun usage_msg;
 
-  let test = test_ldr in
-  let (res, trace) = FlatModel.run_test test (nat_of_int !bound) in
-  List.iter print_chars_endline (List.rev trace);
+  let ncall = FlatModel.first_not_disabled in
 
-  begin match res with
-  | Datatypes.Coq_inl _ -> ()
-  | Datatypes.Coq_inr (s, _) ->
-     print_chars_endline (FlatModel.show_state s)
+  let dcall = fun msg c ->
+    (* print_chars_endline msg; *)
+    c () in
+
+  let test = test_ldr in
+
+  begin match FlatModel.run_test ncall dcall test (nat_of_int !bound) with
+  | ERReturn (s, _) -> print_chars_endline (FlatModel.show_state s)
+  | ERBound -> print_endline "Bound reached!"
+  | ERDisabled -> print_endline "'disabled' propagated to the top?"
+  | ERError msg -> print_endline "ERRORE:"; print_chars_endline msg
   end
 ;;

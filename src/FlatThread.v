@@ -171,8 +171,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
       fun iid =>
         let it : itree (E +' nondetFinE +' schedulerE instruction_id_t +' debugE)
                        (Types.result unit unit) :=
-            'tt <- trigger (Debug ("spawn_instruction: iid '" ++ show iid ++ "'"))
-            ;; '(next_iids, ast) <- trigger ThEFetchAndDecodeOrRestart
+            '(next_iids, ast) <- trigger ThEFetchAndDecodeOrRestart
             ;; 'tt <- ITree.iter (fun next_iids =>
                                    match next_iids with
                                    | [] => ret (inr tt)
@@ -605,6 +604,14 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
         guard false
         ;; ret (false, []).
 
+      Definition restart_instructions (iids : list instruction_id_t)
+                 (ts : list (tree instruction_state))
+        : list (tree instruction_state) :=
+        List.map (tree_map
+                    (fun '((iid, l, _) as ins) => if decide (In iid iids) then (iid, l, None)
+                                               else ins))
+                 ts.
+
       Definition try_sat_mem_load_op_from_storage (rid : mem_read_id_t)
         : itree F (list instruction_id_t) :=
         s <- get
@@ -624,8 +631,12 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
                                                              rs.(rs_reads_from) |> in
            let ins := ins <| ins_mem_reads := Some rs |> in
            (* FIXME: compute iids that need to be restarted *)
-           let restarts := [] in
-           (* FIXME: let subts := restart_instructions restarts subts in *)
+           let restarts := List.concat
+                             (List.map (fun t =>
+                                          List.map (fun '(iid, _, _) => iid)
+                                                   (tree_to_list_preorder t))
+                                       subts) in
+           let subts := restart_instructions restarts subts in
            let s := update_dec_instruction_state_and_subts iid ins subts s in
            'tt <- put s
            ;; ret restarts.
@@ -696,8 +707,12 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
         ;; let ws := ws <| ws_has_propagated := list_replace_nth wid true ws.(ws_has_propagated) |> in
            let ins := ins <| ins_mem_writes := Some ws |> in
            (* FIXME: compute iids that need to be restarted *)
-           let restarts := [] in
-           (* FIXME: let subts := restart_instructions restarts subts in *)
+           let restarts := List.concat
+                             (List.map (fun t =>
+                                          List.map (fun '(iid, _, _) => iid)
+                                                   (tree_to_list_preorder t))
+                                       subts) in
+           let subts := restart_instructions restarts subts in
            let s := update_dec_instruction_state_and_subts iid ins subts s in
            'tt <- put s
            ;; ret restarts.

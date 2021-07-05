@@ -148,67 +148,78 @@ Module Make (Arc : ArcSig)
     let it := interp (bimap handle_thread_E (id_ _)) (denote tids) in
     run_state (resum_it _ it) (initial_state mem entry_locs).
 
-  Fixpoint exec_helper {R}
-           (bound : nat)
-           (it : itree (nondetFinE
-                        +' exceptE disabled
-                        +' exceptE error
-                        +' debugE) R)
-           (acc : list string)
-    : ((itree (nondetFinE
-               +' exceptE disabled
-               +' exceptE error
-               +' debugE) R) + R) *
-      list string :=
-    match bound with
-    | 0 => (inl it, "Bound reached!"%string::acc)
-    | S bound =>
-      match observe it with
-      | RetF r => (inr r, "*** RET ***"%string::acc)
-      | TauF it => exec_helper bound it acc
-      | @VisF _ _ _ X o k =>
-        match o with
-        | inl1 o' =>
-          match o' in nondetFinE Y return X = Y -> _ with
-          | NondetFin n =>
-            fun pf =>
-              (* match Fin.of_nat 0 n with *)
-              (* | inleft i => *)
-              (*   let i := eq_rect_r (fun T => T) i pf in *)
-              (*   exec_helper bound (k i) acc *)
-              (* | _ => (inl it, "ERROR: 0 is not in [Fin.t n]"%string::acc) *)
-              (* end *)
-              match fold_left (fun '(res, acc) i =>
-                                 match res, Fin.of_nat i n with
-                                 | None, inleft i =>
-                                   let i := eq_rect_r (fun T => T) i pf in
-                                   match exec_helper bound (k i) [] with
-                                   | (inl _, "--disabled--"%string::acc') => (None, "disabled >"%string::acc' ++ "<"%string::acc)
-                                   | (r, acc') => (Some (r, acc' ++ acc), [])
-                                   end
-                                 | _, _ => (res, acc)
-                                 end)
-                              (List.seq 0 n)
-                              (None, acc) with
-              | (Some res, _) => res
-              | (None, acc) => (inl it, "--disabled--"%string::("disabled NondetFin " ++ show n)%string::acc)
-              end
-          end eq_refl
-        | inr1 (inl1 (Throw (Disabled tt))) => (inl it, "--disabled--"%string::acc)
-        | inr1 (inr1 (inl1 (Throw (Error msg)))) => (inl it, msg::acc)
-        | inr1 (inr1 (inr1 o')) =>
-          match o' in debugE Y return X = Y -> _ with
-          | Debug msg => fun pf =>
-                          exec_helper bound (k (eq_rect_r (fun T => T) tt pf))
-                                      (("debug: " ++ msg)%string::acc)
-          end eq_refl
-        end
-      end
-    end.
 
-  Definition exec n (mem : list (thread_id_t * instruction_id_t * mem_write))
-             (entry_locs : list mem_loc)
-    : (_ + (state * unit)) * list string :=
-    let it := run mem entry_locs in
-    exec_helper n it [].
+  Section Execute.
+    Notation execE := (nondetFinE +' exceptE disabled +' exceptE error
+                       +' debugE)%type.
+
+    Notation R := (state * unit)%type.
+    Variant exec_result :=
+    | ERReturn : R -> exec_result
+    | ERBound : exec_result
+    | ERDisabled : exec_result
+    | ERError : string -> exec_result.
+
+    Definition nondet_callback := forall n:nat, (Fin.t n -> exec_result) -> exec_result.
+    Variable ncall : nondet_callback.
+
+    Definition debug_callback := string -> (unit -> exec_result) -> exec_result.
+    Variable dcall : debug_callback.
+
+    Fixpoint exec_helper (bound : nat) (it : itree execE R) : exec_result :=
+      match bound with
+      | 0 => ERBound
+      | S bound =>
+        match observe it with
+        | RetF r => ERReturn r
+        | TauF it => exec_helper bound it
+        | @VisF _ _ _ X o k =>
+          match o with
+          | inl1 o' =>
+            match o' in nondetFinE Y return X = Y -> _ with
+            | NondetFin n =>
+              fun pf => ncall n (fun i =>
+                                let i := eq_rect_r (fun T => T) i pf in
+                                exec_helper bound (k i))
+                      (*    match Fin.of_nat i n with *)
+                      (*    | inleft i => *)
+                      (*      let i := eq_rect_r (fun T => T) i pf in *)
+                      (*      exec_helper bound (k i) *)
+                      (*    | _ => ERError "exec_helper: " ++ show i ++ " is not in the range [0," ++ show n ++ ")" *)
+                      (*    end) *)
+                      (* n *)
+                (* match fold_left (fun 'res i => *)
+                (*                    match res, Fin.of_nat i n with *)
+                (*                    | None, inleft i => *)
+                (*                      let i := eq_rect_r (fun T => T) i pf in *)
+                (*                      match exec_helper bound (k i) with *)
+                (*                      | ERDisabled => None *)
+                (*                      | res => Some res *)
+                (*                      end *)
+                (*                    | _, _ => res *)
+                (*                    end) *)
+                (*                 (List.seq 0 n) *)
+                (*                 None with *)
+                (* | Some res => res *)
+                (* | None => ERDisabled *)
+                (* end *)
+            end eq_refl
+          | inr1 (inl1 (Throw (Disabled tt))) => ERDisabled
+          | inr1 (inr1 (inl1 (Throw (Error msg)))) => ERError msg
+          | inr1 (inr1 (inr1 o')) =>
+            match o' in debugE Y return X = Y -> _ with
+            | Debug msg => fun pf =>
+                            dcall msg (fun 'tt =>
+                                         exec_helper bound (k (eq_rect_r (fun T => T) tt pf)))
+            end eq_refl
+          end
+        end
+      end.
+
+    Definition exec (bound : nat) (mem : list (thread_id_t * instruction_id_t * mem_write))
+               (entry_locs : list mem_loc)
+      : exec_result :=
+      let it := run mem entry_locs in
+      exec_helper bound it.
+  End Execute.
 End Make.
