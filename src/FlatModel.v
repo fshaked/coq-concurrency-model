@@ -92,12 +92,19 @@ Section NondetCallbacks.
       end.
 End NondetCallbacks.
 
-Definition run_test (ncall : Model.nondet_callback)
+Definition init_test
+           (mem : list (instruction_id_t * mem_write_id_t * mem_write))
+  :=
+  Model.run mem [MemLoc 4096].
+
+Definition run_test
+           (ncall : Model.nondet_callback)
            (dcall : Model.debug_callback)
            (mem : list (instruction_id_t * mem_write_id_t * mem_write))
            (bound : nat)
   : Model.exec_result :=
   Model.exec ncall dcall bound mem [MemLoc 4096].
+
 
 Existing Instance Model.showable_state.
 
@@ -141,6 +148,7 @@ Cd "extracted_ocaml".
 Separate Extraction
          ExtrOcamlIntConv.nat_of_int ExtrOcamlIntConv.int_of_nat
          run_test show_state first_not_disabled
+         init_test Model.step
          test_and test_str test_ldr.
 
 Cd "..".

@@ -140,22 +140,34 @@ Section List.
 End List.
 
 Section Tree.
-  Inductive tree (T : Type) : Type :=
-  | Tree : T -> list (tree T) -> tree T.
-  #[global] Arguments Tree {T}.
+  Inductive tree (N L : Type) : Type :=
+  | TLeaf : L -> tree N L
+  | TNode : N -> list (tree N L) -> tree N L.
+  #[global] Arguments TLeaf {N L}.
+  #[global] Arguments TNode {N L}.
 
-  Fixpoint tree_map_with_context {T Y : Type}
-           (f : list T -> T -> list (tree T) -> Y) (pref : list T) (t : tree T)
-    : tree Y :=
-    let '(Tree x ts) := t in
-    Tree (f pref x ts) (List.map (tree_map_with_context f (x::pref)) ts).
+  Fixpoint tree_map_in_context {N L N' L' : Type}
+           (fn : list N' -> N -> list (tree N L) -> N')
+           (fl : list N' -> L -> L')
+           (pref : list N') (t : tree N L)
+    : tree N' L' :=
+    match t with
+    | TNode n ts =>
+      let n := fn pref n ts in
+      TNode n (List.map (tree_map_in_context fn fl (n::pref)) ts)
+    | TLeaf l => TLeaf (fl pref l)
+    end.
 
-  Definition tree_map {T Y : Type} (f : T -> Y) (t : tree T) : tree Y :=
-    tree_map_with_context (fun _ x _ => f x) [] t.
+  Definition tree_map {N L N' L' : Type} (fn : N -> N') (fl : L -> L')
+    : tree N L -> tree N' L' :=
+    tree_map_in_context (fun _ n _ => fn n) (fun _ l => fl l) [].
 
-  Fixpoint tree_to_list_preorder {T : Type} (t : tree T) : list T :=
-    let '(Tree x ts) := t in
-    x :: List.concat (List.map tree_to_list_preorder ts).
+  Fixpoint tree_to_list_preorder {N L : Type} (t : tree N L) : list (N + L) :=
+    match t with
+    | TNode n ts =>
+      (inl n) :: List.concat (List.map tree_to_list_preorder ts)
+    | TLeaf l => [inr l]
+    end.
 End Tree.
 
 Definition id_t := nat.
@@ -221,16 +233,24 @@ Section Scheduler.
     ;; 'tt <- trigger EndExc
     ;; ret r.
 
+  Definition is_eager {E S IR}
+             (is_eager_event : forall A, (schedulerE S +' E) A -> bool)
+             (it : itree (schedulerE S +' E) IR)
+    : bool :=
+    match observe it with
+    | RetF _ => true
+    | TauF _ => true
+    | @VisF _ _ _ X o k => is_eager_event X o
+    end.
+
   Definition scheduler_helper {E S IR R}
-             (scheduler : (S -> S -> bool) ->
-                          (ktree (schedulerE S +' E) S IR) ->
-                          (R -> IR -> R) ->
-                          R ->
+             (scheduler : R ->
                           (list (S * itree (schedulerE S +' E) IR)) ->
                           (option S) ->
                           itree (nondetFinE +' E) R)
              (eqb_S : S -> S -> bool)
              (spawn : ktree (schedulerE S +' E) S IR)
+             (is_eager_event : forall A, (schedulerE S +' E) A -> bool)
              (fold_results : R -> IR -> R)
              (acc_result : R)
              (its : list (S * itree (schedulerE S +' E) IR))
@@ -245,22 +265,28 @@ Section Scheduler.
             | Some n => Ret n
             | None =>
               (* The exclusive itree killed itslef before ending the exclusive
-            block. Maybe make this an error? *)
+                 block. Maybe make this an error? *)
               trigger (NondetFin (List.length its))
             end
-          | None => trigger (NondetFin (List.length its))
+          | None =>
+            match List.find (fun '(_, it) => is_eager is_eager_event it) its with
+            | Some (id, _) =>
+              match list_find_index its (fun '(id', _) => eqb_S id' id) with
+              | Some n => Ret n
+              | None => (* unreachable *)
+                trigger (NondetFin (List.length its))
+              end
+            | None => trigger (NondetFin (List.length its))
+            end
           end
       ;; let '(id, it) := list_nth its n in
          match observe it with
          | RetF r =>
-           let acc_result := fold_results acc_result r in
-           Tau (scheduler eqb_S spawn fold_results acc_result
-                          (list_remove_nth (proj1_sig (Fin.to_nat n)) its)
-                          exclusive)
+           let its := list_remove_nth (proj1_sig (Fin.to_nat n)) its in
+           Tau (scheduler (fold_results acc_result r) its exclusive)
          | TauF it =>
-           Tau (scheduler eqb_S spawn fold_results acc_result
-                          (list_replace_nth (proj1_sig (Fin.to_nat n)) (id, it) its)
-                          exclusive)
+           let its := list_replace_nth (proj1_sig (Fin.to_nat n)) (id, it) its in
+           Tau (scheduler acc_result its exclusive)
          | @VisF _ _ _ X o k =>
            match o with
            | inl1 o' =>
@@ -269,9 +295,8 @@ Section Scheduler.
              | Spawn id' =>
                fun pf =>
                  let it := k (eq_rect_r (fun T => T) tt pf) in
-                 Tau (scheduler eqb_S spawn fold_results acc_result
-                                ((id', spawn id')::list_replace_nth (proj1_sig (Fin.to_nat n)) (id, it) its)
-                                exclusive)
+                 let its := (id', spawn id')::list_replace_nth (proj1_sig (Fin.to_nat n)) (id, it) its in
+                 Tau (scheduler acc_result its exclusive)
              | Kill ids' =>
                fun pf =>
                  let it := k (eq_rect_r (fun T => T) tt pf) in
@@ -280,22 +305,22 @@ Section Scheduler.
                               (* Remove all the itrees with id in [ids'] *)
                               (fun '(id', _) => negb (List.existsb (eqb_S id') ids'))
                               its in
-                 Tau (scheduler eqb_S spawn fold_results acc_result its exclusive)
+                 Tau (scheduler acc_result its exclusive)
              | StartExc =>
                fun pf =>
                  let it := k (eq_rect_r (fun T => T) tt pf) in
                  let its := list_replace_nth (proj1_sig (Fin.to_nat n)) (id, it) its in
-                 Tau (scheduler eqb_S spawn fold_results acc_result its (Some id))
+                 Tau (scheduler acc_result its (Some id))
              | EndExc =>
                fun pf =>
                  let it := k (eq_rect_r (fun T => T) tt pf) in
                  let its := list_replace_nth (proj1_sig (Fin.to_nat n)) (id, it) its in
-                 Tau (scheduler eqb_S spawn fold_results acc_result its None)
+                 Tau (scheduler acc_result its None)
              end eq_refl
            | inr1 o' =>
              Vis (inr1 o') (fun x =>
                               let its := list_replace_nth (proj1_sig (Fin.to_nat n)) (id, k x) its in
-                              scheduler eqb_S spawn fold_results acc_result its exclusive)
+                              scheduler acc_result its exclusive)
            end
          end
     end.
@@ -303,12 +328,14 @@ Section Scheduler.
   CoFixpoint scheduler {E S IR R}
              (eqb_S : S -> S -> bool)
              (spawn : ktree (schedulerE S +' E) S IR)
+             (is_eager_event : forall A, (schedulerE S +' E) A -> bool)
              (fold_results : R -> IR -> R)
              (acc_result : R)
              (its : list (S * itree (schedulerE S +' E) IR))
              (exclusive : option S)
     : itree (nondetFinE +' E) R :=
-    scheduler_helper scheduler eqb_S spawn fold_results acc_result its exclusive.
+    scheduler_helper (scheduler eqb_S spawn is_eager_event fold_results)
+                     eqb_S spawn is_eager_event fold_results acc_result its exclusive.
 End Scheduler.
 
 

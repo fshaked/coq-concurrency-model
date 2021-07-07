@@ -32,21 +32,68 @@ let print_chars_endline cs =
   print_endline (chars_to_string cs)
 ;;
 
+type exec_result =
+  | Success of FlatModel.Model.state
+  | Reject
+  | Error
+;;
+
+let rec exec_test it =
+  begin match FlatModel.Model.step it with
+  | SNondet its ->
+     print_endline (Printf.sprintf "- %d" (List.length its));
+     nondet its
+  | SNext (Some dbg, it) ->
+     print_chars_endline dbg;
+     exec_test it
+  | SNext (None, it) ->
+     print_string ".";
+     exec_test it
+
+  | SSuccess (s, _) -> Success s
+  | SReject ->
+     print_endline "^DISABLED^";
+     Reject
+  | SError err ->
+     print_endline "ERROR:";
+     print_chars_endline err;
+     Error
+  end
+and nondet its =
+  begin match its with
+  | it::its ->
+     begin match exec_test it with
+     | Success res -> Success res
+     | Reject ->
+        print_endline "^NONDET DISABLED^";
+        nondet its
+     | Error -> Error
+     end
+  | _ -> Reject
+  end
+;;
+
 let main =
   Arg.parse speclist anon_fun usage_msg;
 
-  let ncall = FlatModel.first_not_disabled in
+  let test = test_and in
+  (* let test = test_ldr in *)
 
-  let dcall = fun msg c ->
-    (* print_chars_endline msg; *)
-    c () in
-
-  let test = test_ldr in
-
-  begin match FlatModel.run_test ncall dcall test (nat_of_int !bound) with
-  | ERReturn (s, _) -> print_chars_endline (FlatModel.show_state s)
-  | ERBound -> print_endline "Bound reached!"
-  | ERDisabled -> print_endline "'disabled' propagated to the top?"
-  | ERError msg -> print_endline "ERRORE:"; print_chars_endline msg
+  begin match exec_test (init_test test) with
+  | Success s -> print_chars_endline (FlatModel.show_state s)
+  | _ -> ()
   end
+
+  (* let ncall = FlatModel.first_not_disabled in
+   *
+   * let dcall = fun msg c ->
+   *   (\* print_chars_endline msg; *\)
+   *   c () in
+   *
+   * begin match FlatModel.run_test ncall dcall test (nat_of_int !bound) with
+   * | ERReturn (s, _) -> print_chars_endline (FlatModel.show_state s)
+   * | ERBound -> print_endline "Bound reached!"
+   * | ERDisabled -> print_endline "'disabled' propagated to the top?"
+   * | ERError msg -> print_endline "ERRORE:"; print_chars_endline msg
+   * end *)
 ;;

@@ -57,8 +57,9 @@ Module Make (Arc : ArcSig)
         scheduler
           Nat.eqb
           (fun tid => Ret (Reject tt)) (* spawn *)
-          (* TODO: do we want to support spawning of new threads?
-             Probably not. *)
+          (* TODO: do we want to support spawning of new threads? *)
+          (*        Probably not. *)
+          (fun _ _ => false)
           (fun 'tt _ => tt) (* fold_results *)
           tt its None in
     resum_it _ it.
@@ -124,8 +125,8 @@ Module Make (Arc : ArcSig)
                                  (case_ (cat inl_ (cat inr_ (cat inr_ inr_))) (* exceptE error *)
                                         (cat inr_ (cat inr_ (cat inr_ inr_))))))) (* debugE *)
             it in
-      'tt <- trigger (Debug ("handle_thread_E: tid '" ++ show tid ++ "'"
-                                                     ++ ", iid '" ++ show iid ++ "'"))
+      'tt <- trigger (Debug ("handle_thread_E: tid " ++ show tid
+                                                    ++ ", iid " ++ show iid))
       ;; s <- get
       ;; thr_state <- try_unwrap_option (List.nth_error s.(threads) tid)
                                        "get_thread_state: thread is missing"
@@ -166,6 +167,42 @@ Module Make (Arc : ArcSig)
     Definition debug_callback := string -> (unit -> exec_result) -> exec_result.
     Variable dcall : debug_callback.
 
+    Variant step_result :=
+    | SNondet : list (itree execE R) -> step_result
+    | SNext : option string -> itree execE R -> step_result
+    | SSuccess : R -> step_result
+    | SReject : step_result
+    | SError : string -> step_result.
+
+    Definition step (it : itree execE R) : step_result :=
+      match observe it with
+      | RetF r => SSuccess r
+      | TauF it => SNext None it
+      | @VisF _ _ _ X o k =>
+        match o with
+        | inl1 o' =>
+          match o' in nondetFinE Y return X = Y -> _ with
+          | NondetFin n =>
+            fun pf =>
+              SNondet (List.fold_right (fun i acc =>
+                                         match Fin.of_nat i n with
+                                         | inleft i =>
+                                           let i := eq_rect_r (fun T => T) i pf in
+                                           k i :: acc
+                                         | _  => acc
+                                         end)
+                                       []
+                                       (List.seq 0 n))
+          end eq_refl
+        | inr1 (inl1 (Throw (Disabled tt))) => SReject
+        | inr1 (inr1 (inl1 (Throw (Error msg)))) => SError msg
+        | inr1 (inr1 (inr1 o')) =>
+          match o' in debugE Y return X = Y -> _ with
+          | Debug msg => fun pf => SNext (Some msg) (k (eq_rect_r (fun T => T) tt pf))
+          end eq_refl
+        end
+      end.
+
     Fixpoint exec_helper (bound : nat) (it : itree execE R) : exec_result :=
       match bound with
       | 0 => ERBound
@@ -181,28 +218,6 @@ Module Make (Arc : ArcSig)
               fun pf => ncall n (fun i =>
                                 let i := eq_rect_r (fun T => T) i pf in
                                 exec_helper bound (k i))
-                      (*    match Fin.of_nat i n with *)
-                      (*    | inleft i => *)
-                      (*      let i := eq_rect_r (fun T => T) i pf in *)
-                      (*      exec_helper bound (k i) *)
-                      (*    | _ => ERError "exec_helper: " ++ show i ++ " is not in the range [0," ++ show n ++ ")" *)
-                      (*    end) *)
-                      (* n *)
-                (* match fold_left (fun 'res i => *)
-                (*                    match res, Fin.of_nat i n with *)
-                (*                    | None, inleft i => *)
-                (*                      let i := eq_rect_r (fun T => T) i pf in *)
-                (*                      match exec_helper bound (k i) with *)
-                (*                      | ERDisabled => None *)
-                (*                      | res => Some res *)
-                (*                      end *)
-                (*                    | _, _ => res *)
-                (*                    end) *)
-                (*                 (List.seq 0 n) *)
-                (*                 None with *)
-                (* | Some res => res *)
-                (* | None => ERDisabled *)
-                (* end *)
             end eq_refl
           | inr1 (inl1 (Throw (Disabled tt))) => ERDisabled
           | inr1 (inr1 (inl1 (Throw (Error msg)))) => ERError msg

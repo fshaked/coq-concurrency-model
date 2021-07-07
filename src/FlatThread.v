@@ -33,6 +33,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
   Export Arc.
   Existing Instance showable_ast.
   Existing Instance decision_reg_eq.
+  Existing Instance showable_regE.
 
   Variant _E : Type -> Type :=
   | ThEFetchAndDecodeOrRestart : _E (list instruction_id_t * ast)
@@ -59,21 +60,21 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
   Instance showable_E : forall A, Showable (E A) :=
     { show := fun e =>
                 match e with
-                | ThEFetchAndDecodeOrRestart => "ThEFetchAndDecodeOrRestart"%string
-                | ThEFinishIns => "ThEFinishIns"%string
-                | ThERegAccess _ regE => "ThERegAccess"%string
+                | ThEFetchAndDecodeOrRestart => "ThEFetchAndDecodeOrRestart"
+                | ThEFinishIns => "ThEFinishIns"
+                | ThERegAccess _ e => "ThERegAccess (" ++ show e ++ ")"
                 (** Load events *)
-                | ThEInitMemLoadOps mem_slc => "ThEInitMemLoadOps"%string
-                | ThESatMemLoadOpForwarding mem_read_id_t => "ThESatMemLoadOpForwarding"%string
-                | ThESatMemLoadOpStorage mem_read_id_t => "ThESatMemLoadOpStorage"%string
-                | ThECompleteLoadOps => "ThECompleteLoadOps"%string
+                | ThEInitMemLoadOps slc => "ThEInitMemLoadOps " ++ show slc
+                | ThESatMemLoadOpForwarding rid => "ThESatMemLoadOpForwarding " ++ show rid
+                | ThESatMemLoadOpStorage rid => "ThESatMemLoadOpStorage " ++ show rid
+                | ThECompleteLoadOps => "ThECompleteLoadOps"
                 (** Store events *)
-                | ThEInitMemStoreOpFps mem_slc => "ThEInitMemStoreOpFps"%string
-                | ThEInstaMemStoreOpVals mem_slc_val => "ThEInstaMemStoreOpVals"%string
-                | ThECommitStoreInstruction => "ThECommitStoreInstruction"%string
-                | ThEPropagateStoreOp mem_write_id_t => "ThEPropagateStoreOp"%string
-                | ThECompleteStoreOps => "ThECompleteStoreOps"%string
-                end
+                | ThEInitMemStoreOpFps slc => "ThEInitMemStoreOpFps " ++ show slc
+                | ThEInstaMemStoreOpVals val => "ThEInstaMemStoreOpVals " ++ show val
+                | ThECommitStoreInstruction => "ThECommitStoreInstruction"
+                | ThEPropagateStoreOp wid => "ThEPropagateStoreOp " ++ show wid
+                | ThECompleteStoreOps => "ThECompleteStoreOps"
+                end%string
     }.
 
   Section Denote.
@@ -81,17 +82,28 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
     : regE ~> itree F :=
       fun _ e => trigger (ThERegAccess _ e).
 
+    Definition denote_spawns  {F} `{schedulerE instruction_id_t -< F}
+      : ktree F (list instruction_id_t) unit :=
+      fun iids =>
+        List.fold_left
+          (fun it iid => Vis (subevent _ (Spawn iid)) (fun 'tt => it))
+          iids (Ret tt).
+        (* The fold above can also be implemented as below. I'm not sure which
+           way is better. The implementation above has less [Tau]s, and
+           therefore less nondet interleaving, but that is not a big factor. *)
+        (* ITree.iter (fun iids => *)
+        (*               match iids with *)
+        (*               | [] => ret (inr tt) *)
+        (*               | iid::iids => 'tt <- trigger (Spawn iid) *)
+        (*                            ;; ret (inl iids) *)
+        (*               end) iids. *)
+
     Definition denote_restarts {F} `{schedulerE instruction_id_t -< F}
       : ktree F (list instruction_id_t) unit :=
       fun iids =>
         'tt <- trigger (Kill iids)
-        ;; ITree.iter (fun respawn =>
-                         match respawn with
-                         | [] => ret (inr tt)
-                         | iid::respawn =>
-                           'tt <- trigger (Spawn iid)
-                           ;; ret (inl respawn)
-                         end) iids.
+        ;; denote_spawns iids.
+
 
     Definition lift_mem_read {F}
                `{E -< F} `{nondetFinE -< F}
@@ -172,12 +184,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
         let it : itree (E +' nondetFinE +' schedulerE instruction_id_t +' debugE)
                        (Types.result unit unit) :=
             '(next_iids, ast) <- trigger ThEFetchAndDecodeOrRestart
-            ;; 'tt <- ITree.iter (fun next_iids =>
-                                   match next_iids with
-                                   | [] => ret (inr tt)
-                                   | niid::next_iids => trigger (Spawn niid)
-                                                     ;; ret (inl next_iids)
-                                   end) next_iids
+            ;; 'tt <- denote_spawns next_iids
             ;; 'tt <- resum_it _ (lift_ins_sem _ (denote ast))
             ;; 'tt <- trigger ThEFinishIns
             ;; ret (Accept tt) in
@@ -191,6 +198,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
       : ktree F instruction_id_t (Types.result unit unit) :=
       fun iid =>
         resum_it _ (scheduler Nat.eqb spawn_instruction
+                              (fun _ _ => false)
                               (fun r1 r2 => match r1, r2 with
                                          | Accept tt, Accept tt => Accept tt
                                          | _, _ => Reject tt
@@ -268,6 +276,9 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
 
     Record decoded_instruction_state :=
       mk_decoded_instruction_state {
+          ins_id : instruction_id_t;
+          ins_loc : mem_loc;
+
           ins_ast : ast;
 
           ins_reg_reads : list reg_read_state;
@@ -279,15 +290,16 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
           ins_finished : bool }.
 
     Instance eta_decoded_instruction_state : Settable _ :=
-      settable! mk_decoded_instruction_state <ins_ast; ins_reg_reads; ins_reg_writes; ins_mem_reads; ins_mem_writes; ins_finished>.
+      settable! mk_decoded_instruction_state <ins_id; ins_loc; ins_ast; ins_reg_reads; ins_reg_writes; ins_mem_reads; ins_mem_writes; ins_finished>.
 
     Local Open Scope string_scope.
     Instance showable_decoded_instruction_state : Showable decoded_instruction_state :=
       { show :=
           fun i =>
-            ("'" ++ show i.(ins_ast) ++ "' " ++
-                                     (if i.(ins_finished) then "(finished)"
-                                      else "(in-flight)") ++ newline ++
+            show i.(ins_id) ++ ":[" ++ show i.(ins_loc) ++ "] " ++
+              ("'" ++ show i.(ins_ast) ++ "' " ++
+                                       (if i.(ins_finished) then "(finished)"
+                                        else "(in-flight)") ++ newline ++
              match i.(ins_reg_reads) with
              | [] => ""
              | _ => "  reg reads: " ++ show i.(ins_reg_reads) ++ newline
@@ -308,11 +320,15 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
       }.
     Close Scope string_scope.
 
-    Definition initial_decoded_instruction_state
-               (ast : ast)
+    Definition initial_decoded_instruction_state (iid : instruction_id_t)
+               (loc : mem_loc) (ast : ast)
       : decoded_instruction_state :=
       let info := info_of_ast ast in
-      {| ins_ast := ast;
+      {| ins_id := iid;
+         ins_loc := loc;
+
+         ins_ast := ast;
+
          ins_reg_reads := List.map (fun '(slc, addr) => mk_reg_read_state slc addr [] None)
                                    info.(input_regs);
          ins_reg_writes := List.map (fun slc => mk_reg_write_state
@@ -323,13 +339,11 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
          ins_mem_writes := None;
          ins_finished := false |}.
 
-    Definition instruction_state : Type := instruction_id_t *
-                                           mem_loc *
-                                           option decoded_instruction_state.
-
+    Notation ins_tree := (tree decoded_instruction_state
+                               (tree (instruction_id_t * mem_loc) unit))%type.
     Record _state :=
       mk_state { next_iid : instruction_id_t;
-                 instruction_tree : tree instruction_state }.
+                 instruction_tree : ins_tree }.
     (* Workaround: parameter can't be instantiated by an inductive type *)
     Definition state := _state.
 
@@ -340,26 +354,40 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
     Instance showable_state : Showable state :=
       { show :=
           fun s =>
-            let fix show_tree t :=
+            let fix show_unf_tree t :=
                 match t with
-                | Tree (iid, _, _) [] => show iid
-                | Tree (iid, _, _) [t] =>
-                  (show iid) ++ "," ++ show_tree t
-                | Tree (iid, _, _) ts =>
+                | TLeaf tt => ""
+                | TNode (iid, _) [] => show iid
+                | TNode (iid, _) [t] => (show iid) ++ "," ++ show_unf_tree t
+                | TNode (iid, _) ts =>
                   (show iid) ++ "["
-                             ++ String.concat ";" (List.map show_tree ts)
+                             ++ String.concat ";" (List.map show_unf_tree ts)
                              ++ "]"
                 end in
-
-            let show_ins '(iid, loc, ins) :=
-                let ins : string := match ins with
-                                    | None => "not fetched"
-                                    | Some dec_ins => show dec_ins
-                                    end in
-                show iid ++ ":[" ++ show loc ++ "] " ++ ins in
-
+            let fix show_dec_tree t :=
+                match t with
+                | TLeaf t => show_unf_tree t
+                | TNode i [] => show i.(ins_id)
+                | TNode i [t] => (show i.(ins_id)) ++ "," ++ show_dec_tree t
+                | TNode i ts =>
+                  (show i.(ins_id)) ++ "["
+                             ++ String.concat ";" (List.map show_dec_tree ts)
+                             ++ "]"
+                end in
+            let show_ins i :=
+                match i with
+                | inl i => show i
+                | inr t =>
+                  let show_ins i :=
+                      match i with
+                      | inl (iid, loc) =>
+                        show iid ++ ":[" ++ show loc ++ "] not fetched"
+                      | inr tt => ""
+                      end in
+                  String.concat "" (List.map show_ins (tree_to_list_preorder t))
+                end in
             "Instruction tree: " ++ newline ++
-            "  " ++ (show_tree s.(instruction_tree)) ++ newline ++
+            "  " ++ (show_dec_tree s.(instruction_tree)) ++ newline ++
             "Instructions:" ++ newline ++
             String.concat "" (List.map show_ins (tree_to_list_preorder s.(instruction_tree)))
       }.
@@ -368,7 +396,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
     Definition initial_state (iid : instruction_id_t) (loc : mem_loc)
       : state :=
       {| next_iid := iid + 1;
-         instruction_tree := Tree (iid, loc, None) [] |}.
+         instruction_tree := TLeaf (TNode (iid, loc) []) |}.
 
     Section RegisterRead.
       Local Instance slice_id_rsv : Slice (instruction_id_t * nat * reg_slc_val) :=
@@ -383,23 +411,22 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
       Fixpoint read_reg_slcs
                (r : reg)
                (rslcs : list reg_slc)
-               (pref : list instruction_state)
+               (pref : list decoded_instruction_state)
                (rf : list (instruction_id_t * nat * reg_slc_val))
         : option (list (instruction_id_t * nat * reg_slc_val)) :=
         match pref with
-        | (iid, _, Some ins)::pref =>
+        | ins::pref =>
           let wslcs := List.combine (List.seq 0 (List.length ins.(ins_reg_writes)))
                                     ins.(ins_reg_writes) in
           let wslcs := List.filter (fun '(i, w) => isTrue (w.(rws_slc_val).(rsv_slc).(rs_reg) = r))
                                    wslcs in
-          let wslcs := List.map (fun '(i, w) => ((iid, i), w.(rws_slc_val))) wslcs in
+          let wslcs := List.map (fun '(i, w) => ((ins.(ins_id), i), w.(rws_slc_val))) wslcs in
 
           match Utils.reads_from_slcs wslcs rslcs rf with
           | Some (rf, nil) => Some rf
           | Some (rf, rslcs) => read_reg_slcs r rslcs pref rf
           | None => None
           end
-        | (iid, _, None)::_ => None
         | nil =>
           (* FIXME: read initial value; for now read 0 *)
           Some (List.fold_left (fun rf rslc =>
@@ -439,38 +466,82 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
       Qed.
     End RegisterRead.
 
-    Definition get_instruction_state {F} `{exceptE error -< F}
-               (iid : instruction_id_t) (s : state)
-      : itree F (list instruction_state * instruction_state * list (tree instruction_state)) :=
-      let fix helper prefix t :=
-          let '(Tree ((iid', _, _) as i) subts) := t in
-          if Nat.eqb iid' iid then Some (prefix, i, subts)
-          else
-            match List.find (fun x => match x with None => false | _ => true end)
-                            (List.map (helper (i::prefix)) subts) with
-            | Some x => x
-            | None => None
-            end
-      in
-      try_unwrap_option (helper [] s.(instruction_tree))
-                        ("get_instruction_state: Can't find iid '" ++ show iid ++ "'").
+    Fixpoint get_first_unfetched_instruction_helper
+             (iid : instruction_id_t)
+             (pref : list decoded_instruction_state)
+             (t : ins_tree)
+      : option (list decoded_instruction_state * mem_loc *
+                list (tree (instruction_id_t * mem_loc) unit)) :=
+      match t with
+      | TNode i ts =>
+        match List.find (fun x => isTrue (~(x = None)))
+                        (List.map (get_first_unfetched_instruction_helper iid (i::pref)) ts)
+        with
+        | Some x => x
+        | None => None
+        end
+      | TLeaf (TNode (iid', loc) ts) =>
+        if decide (iid' = iid) then Some (pref, loc, ts)
+        else None
+      | TLeaf _ => None
+      end.
 
-    Definition get_dec_instruction_state {F} `{exceptE error -< F}
+    Definition get_first_unfetched_instruction
                (iid : instruction_id_t) (s : state)
-      : itree F (list instruction_state * decoded_instruction_state * list (tree instruction_state)) :=
-      '(prefix, (_, _, ins), subts) <- get_instruction_state iid s
-      ;; dins <- try_unwrap_option ins "get_dec_instruction_state: instruction was not decoded yet"
-      ;; ret (prefix, dins, subts).
+      : option (list decoded_instruction_state * mem_loc *
+                list (tree (instruction_id_t * mem_loc) unit)) :=
+      get_first_unfetched_instruction_helper iid [] s.(instruction_tree).
+
+    Fixpoint get_dec_instruction_state_helper
+               (iid : instruction_id_t)
+               (pref : list decoded_instruction_state)
+               (t : ins_tree)
+      : option (list decoded_instruction_state *
+                decoded_instruction_state *
+                list ins_tree) :=
+      match t with
+      | TNode i ts =>
+        if decide (i.(ins_id) = iid) then Some (pref, i, ts)
+        else
+          match List.find (fun x => isTrue (~(x = None)))
+                          (List.map (get_dec_instruction_state_helper iid (i::pref)) ts)
+          with
+          | Some x => x
+          | None => None
+          end
+      | TLeaf _ => None
+      end.
+
+    Definition get_dec_instruction_state
+               (iid : instruction_id_t) (s : state)
+      : option (list decoded_instruction_state *
+                decoded_instruction_state *
+                list ins_tree) :=
+      get_dec_instruction_state_helper iid [] s.(instruction_tree).
+
+    Definition try_get_dec_instruction_state {F}
+               `{exceptE error -< F}
+               (iid : instruction_id_t) (s : state)
+      : itree F (list decoded_instruction_state *
+                 decoded_instruction_state *
+                 list ins_tree) :=
+      try_unwrap_option (get_dec_instruction_state iid s)
+                        ("try_get_dec_instruction_state: missing iid " ++ show iid).
 
     Definition update_dec_instruction_state_and_subts
                (iid : instruction_id_t) (dins : decoded_instruction_state)
-               (subts : list (tree instruction_state)) (s : state)
+               (ts : list ins_tree) (s : state)
       : state :=
       let fix helper t :=
-          let '(Tree ((iid', loc, _) as i) subts') := t in
-          if Nat.eqb iid' iid then Tree (iid, loc, Some dins) subts
-          else Tree i (List.map helper subts')
-      in
+          match t with
+          | TNode i ts' =>
+            if decide (i.(ins_id) = iid) then TNode dins ts
+            else TNode i (List.map helper ts')
+          | TLeaf (TNode (iid', _) _) =>
+            if decide (iid' = iid) then TNode dins ts
+            else t
+          | TLeaf (TLeaf tt) => t
+          end in
       s <| instruction_tree := helper s.(instruction_tree) |>.
 
     Definition update_dec_instruction_state
@@ -478,10 +549,15 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
                (s : state)
       : state :=
       let fix helper t :=
-          let '(Tree ((iid', loc, _) as i) subts) := t in
-          if Nat.eqb iid' iid then Tree (iid, loc, Some dins) subts
-          else Tree i (List.map helper subts)
-      in
+          match t with
+          | TNode i ts' =>
+            if decide (i.(ins_id) = iid) then TNode dins ts'
+            else TNode i (List.map helper ts')
+          | TLeaf (TNode (iid', _) ts') =>
+            if decide (iid' = iid) then TNode dins (List.map TLeaf ts')
+            else t
+          | TLeaf (TLeaf tt) => t
+          end in
       s <| instruction_tree := helper s.(instruction_tree) |>.
 
     Section Handle_instruction_instance.
@@ -497,32 +573,32 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
       Definition try_fetch_and_decode_or_restart
         : itree F (list instruction_id_t * ast) :=
         s <- get
-        ;; '(_, (_, loc, ins), _) <- get_instruction_state iid s
-        ;; match ins with
+        ;; match get_dec_instruction_state iid s with
+           | Some (_, ins, _) =>
+             (* Nothing to do, the instruction-state has already been restarted. *)
+             ret ([], ins.(ins_ast))
            | None =>
-             '(slc, rf) <- trigger (StEReadInstruction loc)
+             '(_, loc, _) <- guard_some (get_first_unfetched_instruction iid s)
+             ;; '(slc, rf) <- trigger (StEReadInstruction loc)
              ;; val <- try_unwrap_option (mem_slc_val_of_reads_from slc rf)
                                         "try_fetch_and_decode_or_restart: some bytes are missing from memory read of instruction."
              ;; ast <- try_unwrap_option (decode val)
                                         "try_fetch_and_decode_or_restart: decoding of instruction failed"
-             ;; let ins := initial_decoded_instruction_state ast in
+             ;; let ins := initial_decoded_instruction_state iid loc ast in
                 let next_pcs := next_pc loc ast in
                 let iids := List.seq s.(next_iid) (List.length next_pcs) in
-                let subts := List.map (fun '(iid, pc) => Tree (iid, pc, None) [])
+                let subts := List.map (fun '(iid, pc) => TLeaf (TNode (iid, pc) []))
                                       (List.combine iids next_pcs) in
                 let s := s <| next_iid := s.(next_iid) + (List.length next_pcs) |> in
                 let s := update_dec_instruction_state_and_subts iid ins subts s in
                 'tt <- put s
-                ;; ret (iids, ast)
-           | Some ins =>
-             (* Nothing to do, the instruction-state has already been restarted. *)
-             ret ([], ins.(ins_ast))
+             ;; ret (iids, ast)
            end.
 
       Definition try_finish_instruction : itree F unit :=
         (* FIXME: check finish condition *)
         s <- get
-        ;; '(pref, ins, _) <- get_dec_instruction_state iid s
+        ;; '(pref, ins, _) <- try_get_dec_instruction_state iid s
         ;; let ins := ins <| ins_finished := true |> in
            let s := update_dec_instruction_state iid ins s in
            put s.
@@ -530,7 +606,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
       Definition try_read_reg_slc (rslc : reg_slc)
         : itree F (reg_val rslc.(rs_size)) :=
         s <- get
-        ;; '(pref, ins, _) <- get_dec_instruction_state iid s
+        ;; '(pref, ins, _) <- try_get_dec_instruction_state iid s
         ;; match read_reg_slcs rslc.(rs_reg) [rslc] pref [] with
            | Some rf =>
              let val := reg_val_of_reads_from rslc rf in
@@ -552,7 +628,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
                  (val : reg_val rslc.(rs_size))
         : itree F unit :=
         s <- get
-        ;; '(_, ins, _) <- get_dec_instruction_state iid s
+        ;; '(_, ins, _) <- try_get_dec_instruction_state iid s
         ;; let reg_writes :=
                List.map
                  (fun rws =>
@@ -578,7 +654,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
       Definition try_init_mem_load_ops (slc : mem_slc)
         : itree F (list mem_read_id_t) :=
         s <- get
-        ;; '(_, ins, _) <- get_dec_instruction_state iid s
+        ;; '(_, ins, _) <- try_get_dec_instruction_state iid s
         ;; let sub_slcs := split_load_mem_slc ins.(ins_ast) slc in
            let kind := mem_read_kind_of_ast ins.(ins_ast) in
            let rids := List.seq 0 (List.length sub_slcs) in
@@ -605,17 +681,101 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
         ;; ret (false, []).
 
       Definition restart_instructions (iids : list instruction_id_t)
-                 (ts : list (tree instruction_state))
-        : list (tree instruction_state) :=
+                 (ts : list ins_tree)
+        : list ins_tree :=
         List.map (tree_map
-                    (fun '((iid, l, _) as ins) => if decide (In iid iids) then (iid, l, None)
-                                               else ins))
+                    (fun ins => if decide (In ins.(ins_id) iids) then
+                               (initial_decoded_instruction_state iid ins.(ins_loc) ins.(ins_ast))
+                             else ins)
+                    (fun l => l))
                  ts.
+
+      (* Notation "'forall' ( x 'MEM' l ), p" := (Forall (fun x => p) l) *)
+      (*                                           (at level 40) : . *)
+      (* Notation "'forall' ( ' x  'MEM' l ), p" := (Forall (fun x => p) l) *)
+      (*                                         (x pattern, at level 40). *)
+
+      Infix "-->" := implb (at level 51, right associativity)
+                     : bool_scope.
+      (* LEM: machineDefThreadSubsystem.lem: pop_memory_read_request_cand *)
+  (*     Definition mem_read_request_cand pref i : Prop := *)
+  (*       (* NOTE: we don't check po-previous instructions to the same address. *)
+  (*          See also private comment THREAD1 *) *)
+  (*       (forallb (fun `(_, _, prev_ins) => *)
+  (*                     is_strong_memory_barrier prev_ins.(ins_ast) *)
+  (*                     --> prev_inst.(ins_finished)) *)
+  (*               pref) *)
+
+  (*       (forall (prev_inst MEM pref), *)
+  (*          is_pop_strong_memory_barrier prev_inst.(ins_ast) --> prev_inst.(ins_finished)) && *)
+
+  (* (* See private comment THREAD2 *) *)
+  (* (forall (prev_inst MEM inst_context.active_prefix). *)
+  (*      is_pop_instruction_barrier (ik prev_inst) --> prev_inst.finished) && *)
+
+  (* (* Additions for barrier.st/ld: *) *)
+  (* (forall (prev_inst MEM inst_context.active_prefix). *)
+  (*     is_AArch64_ld_barrier (ik prev_inst) --> prev_inst.finished) && *)
+
+  (* (* Additions for load.acquire/store.release: *) *)
+  (* (* A Store-Release followed by a Load-Acquire is observed in program order *) *)
+  (* ((is_AArch64_load_acquire (ik instruction) || *)
+  (*   is_RISCV_load_strong_acquire (ik instruction)) --> *)
+  (*     forall (prev_inst MEM inst_context.active_prefix). *)
+  (*         (is_AArch64_store_release (ik prev_inst) || *)
+  (*          is_RISCV_store_strong_release (ik prev_inst)) *)
+  (*         --> prev_inst.finished) && *)
+
+  (* (* All po-previous Load-acquires must issue their requests before the *)
+  (* read request. Also see private note THREAD3 *) *)
+  (* (forall (prev_inst MEM inst_context.active_prefix). *)
+  (*     (is_AArch64_load_acquire (ik prev_inst) || *)
+  (*        is_RISCV_load_acquire (ik prev_inst)) *)
+  (*     --> *)
+  (*     (finished_load_part prev_inst || *)
+  (*     is_entirely_satisfied_load prev_inst)) && *)
+
+  (* (* Additions for lwsync: *) *)
+  (* (* all loads that are po-followed by lwsync in active_prefix are finished *) *)
+  (* List.dropWhile (fun i -> not (is_lwsync (ik i))) inst_context.active_prefix *)
+  (* $> List.dropWhile (fun i -> is_memory_load_instruction (ik i) --> finished_load_part i) *)
+  (* $> List.null && *)
+
+  (* (* Additions for load-reserve/store-conditional: *) *)
+  (* (is_PPC_load_reserve (ik instruction) --> *)
+  (*     forall (prev_inst MEM inst_context.active_prefix). *)
+  (*         (is_PPC_load_reserve (ik prev_inst) || is_PPC_store_conditional (ik prev_inst)) *)
+  (*         --> prev_inst.finished) && *)
+
+  (* (*** Additions for RISCV fences ***) *)
+  (* (forall_iprev_with_prefix inst_context.active_prefix $ fun prev_inst prev_active_prefix -> *)
+  (*     is_RISCV_fence_sr (ik prev_inst) --> *)
+  (*       (prev_inst.finished || *)
+  (*       (is_RISCV_fence_pr (ik prev_inst) *)
+  (*         && not (is_RISCV_fence_pw (ik prev_inst)) *)
+  (*         && forall (prev_prev_inst MEM prev_active_prefix). *)
+  (*               is_memory_load_instruction (ik prev_prev_inst) *)
+  (*                 --> is_entirely_satisfied_load prev_prev_inst))) && *)
+
+  (* (forall_iprev_with_prefix inst_context.active_prefix $ fun prev_inst prev_active_prefix -> *)
+  (*     is_RISCV_fence_tso (ik prev_inst) --> *)
+  (*       (prev_inst.finished || *)
+  (*       forall (prev_prev_inst MEM prev_active_prefix). *)
+  (*           is_memory_load_instruction (ik prev_prev_inst) *)
+  (*             --> is_entirely_satisfied_load prev_prev_inst)) && *)
+
+  (* (*** Additions for RISCV load-release/store-acquire ***) *)
+  (* (is_RISCV_load_release (ik instruction) --> *)
+  (*     forall (prev_inst MEM inst_context.active_prefix). prev_inst.finished) && *)
+  (* (forall (prev_inst MEM inst_context.active_prefix). *)
+  (*     is_RISCV_store_acquire (ik prev_inst) --> prev_inst.finished) *)
+
+
 
       Definition try_sat_mem_load_op_from_storage (rid : mem_read_id_t)
         : itree F (list instruction_id_t) :=
         s <- get
-        ;; '(_, ins, subts) <- get_dec_instruction_state iid s
+        ;; '(_, ins, subts) <- try_get_dec_instruction_state iid s
         ;; rs <- try_unwrap_option ins.(ins_mem_reads)
                                         "try_sat_mem_load_op_from_storage: no mem reads."
         ;; unsat_slcs <- try_unwrap_option (List.nth_error rs.(rs_unsat_slcs) rid)
@@ -631,11 +791,19 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
                                                              rs.(rs_reads_from) |> in
            let ins := ins <| ins_mem_reads := Some rs |> in
            (* FIXME: compute iids that need to be restarted *)
-           let restarts := List.concat
-                             (List.map (fun t =>
-                                          List.map (fun '(iid, _, _) => iid)
-                                                   (tree_to_list_preorder t))
-                                       subts) in
+           let restarts :=
+               (List.fold_left (fun iids t =>
+                                  List.fold_left (fun iids i =>
+                                                    match i with
+                                                    | inl ins =>
+                                                      if ins.(ins_finished) then iids
+                                                      else ins.(ins_id) :: iids
+                                                    | inr _ => iids
+                                                    end)
+                                                 (tree_to_list_preorder t)
+                                                 iids)
+                               subts
+                               []) in
            let subts := restart_instructions restarts subts in
            let s := update_dec_instruction_state_and_subts iid ins subts s in
            'tt <- put s
@@ -643,7 +811,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
 
       Definition try_complete_load_ops : itree F mem_slc_val :=
         s <- get
-        ;; '(_, ins, _) <- get_dec_instruction_state iid s
+        ;; '(_, ins, _) <- try_get_dec_instruction_state iid s
         ;; rs <- try_unwrap_option ins.(ins_mem_reads)
                                         "try_complete_load_ops: no mem reads."
         (* ;; guard (isTrue (Forall (fun u => u = []) rs.(rs_unsat_slcs))) *)
@@ -656,7 +824,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
 
       Definition try_init_mem_store_op_fps (slc : mem_slc) : itree F unit :=
         s <- get
-        ;; '(_, ins, _) <- get_dec_instruction_state iid s
+        ;; '(_, ins, _) <- try_get_dec_instruction_state iid s
         ;; let ws := {| ws_footprint := slc;
                         ws_writes := [];
                         ws_has_propagated := [] |} in
@@ -666,7 +834,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
 
       Definition try_insta_mem_store_op_vals (val : mem_slc_val) : itree F unit :=
         s <- get
-        ;; '(_, ins, _) <- get_dec_instruction_state iid s
+        ;; '(_, ins, _) <- try_get_dec_instruction_state iid s
         ;; ws <- try_unwrap_option ins.(ins_mem_writes)
                                         "try_insta_mem_store_op_vals: no mem writes"
         ;; let sub_slcs := split_store_mem_slc_val ins.(ins_ast) ws.(ws_footprint) val in
@@ -686,7 +854,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
 
       Definition try_commit_store_instruction : itree F (list mem_write_id_t) :=
         s <- get
-        ;; '(_, ins, _) <- get_dec_instruction_state iid s
+        ;; '(_, ins, _) <- try_get_dec_instruction_state iid s
         ;; ws <- try_unwrap_option ins.(ins_mem_writes)
                                         "try_commit_store_instruction: no mem writes"
         (* FIXME: check commit-store condition *)
@@ -696,7 +864,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
       Definition try_propagate_store_op (wid : mem_write_id_t)
         : itree F (list instruction_id_t) :=
         s <- get
-        ;; '(_, ins, subts) <- get_dec_instruction_state iid s
+        ;; '(_, ins, subts) <- try_get_dec_instruction_state iid s
         ;; ws <- try_unwrap_option ins.(ins_mem_writes)
                                         "try_propagate_store_op: no mem writes"
         (* ;; guard (isTrue (List.nth_error ws.(ws_has_propagated) wid = Some false)) *)
@@ -707,11 +875,19 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
         ;; let ws := ws <| ws_has_propagated := list_replace_nth wid true ws.(ws_has_propagated) |> in
            let ins := ins <| ins_mem_writes := Some ws |> in
            (* FIXME: compute iids that need to be restarted *)
-           let restarts := List.concat
-                             (List.map (fun t =>
-                                          List.map (fun '(iid, _, _) => iid)
-                                                   (tree_to_list_preorder t))
-                                       subts) in
+           let restarts :=
+               (List.fold_left (fun iids t =>
+                                  List.fold_left (fun iids i =>
+                                                    match i with
+                                                    | inl ins =>
+                                                      if ins.(ins_finished) then iids
+                                                      else ins.(ins_id) :: iids
+                                                    | inr _ => iids
+                                                    end)
+                                                 (tree_to_list_preorder t)
+                                                 iids)
+                               subts
+                               []) in
            let subts := restart_instructions restarts subts in
            let s := update_dec_instruction_state_and_subts iid ins subts s in
            'tt <- put s
@@ -750,7 +926,7 @@ Module Make (Arc : ArcSig) : ThreadSig Arc.
             | ThEPropagateStoreOp wid => try_propagate_store_op iid wid
             | ThECompleteStoreOps => try_complete_store_ops iid
             end in
-        'tt <- trigger (Debug ("handle_E: '" ++ show e ++ "'"))
+        'tt <- trigger (Debug ("handle_E: " ++ show e))
         ;; it.
 
   End State.

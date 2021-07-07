@@ -45,6 +45,14 @@ Definition guard {E} `{exceptE disabled -< E}
 (* Indicates a bug in the model *)
 Variant error : Type := Error : string -> error.
 
+Definition guard_some {E} `{exceptE disabled -< E}
+           {T} (x : option T)
+  : itree E T :=
+  match x with
+  | Some x => ret x
+  | None => throw (Disabled tt)
+  end.
+
 Definition try_unwrap_option {E} `{exceptE error -< E}
            {T} (x : option T) (msg : string)
   : itree E T :=
@@ -254,6 +262,14 @@ Module InsSemCoreFacts (Core : InsSemCoreSig).
   Variant regE : Type -> Type :=
   | RegERead (s : reg_slc) : regE (reg_val s.(rs_size))
   | RegEWrite (s : reg_slc) : reg_val s.(rs_size) -> regE unit.
+
+  Instance showable_regE : forall A, Showable (regE A) :=
+    { show :=
+        fun e =>
+          match e with
+          | RegERead s => "RegERead " ++ show s
+          | RegEWrite s v => "RegEWrite " ++ show s ++ " " ++ show v
+          end%string }.
 
   Variant memE : Type -> Type :=
   | MemERead : mem_slc -> memE mem_slc_val
