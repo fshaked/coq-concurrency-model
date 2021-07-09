@@ -33,7 +33,7 @@ let print_chars_endline cs =
 ;;
 
 type exec_result =
-  | Success of FlatModel.Model.state
+  | Accept of FlatModel.Model.state
   | Reject
   | Error
 ;;
@@ -41,31 +41,44 @@ type exec_result =
 let rec exec_test it =
   begin match FlatModel.Model.step it with
   | SNondet its ->
-     print_endline (Printf.sprintf "- %d" (List.length its));
-     nondet its
+     let (eager, not_eager) = List.partition (fun (_, eager) -> eager) its in
+     Printf.printf "- Nondet %d (%d eager)\n" (List.length its) (List.length eager);
+     begin match eager_nondet eager with
+     | Reject -> nondet not_eager
+     | x -> x
+     end
   | SNext (Some dbg, it) ->
      print_chars_endline dbg;
      exec_test it
   | SNext (None, it) ->
      print_string ".";
      exec_test it
-
-  | SSuccess (s, _) -> Success s
+  | SAccept (s, _) -> Accept s
   | SReject ->
-     print_endline "^DISABLED^";
+     print_endline "- Disabled";
      Reject
   | SError err ->
-     print_endline "ERROR:";
-     print_chars_endline err;
+     Printf.printf "ERROR: %s\n" (chars_to_string err);
      Error
+  end
+and eager_nondet its =
+  begin match its with
+  | (it, _)::its ->
+     begin match exec_test it with
+     | Reject ->
+        print_endline "-- Eager disabled^";
+        eager_nondet its
+     | x -> x
+     end
+  | _ -> Reject
   end
 and nondet its =
   begin match its with
-  | it::its ->
+  | (it, _)::its ->
      begin match exec_test it with
-     | Success res -> Success res
+     | Accept res -> Accept res
      | Reject ->
-        print_endline "^NONDET DISABLED^";
+        print_endline "-- Nondet disabled";
         nondet its
      | Error -> Error
      end
@@ -76,24 +89,11 @@ and nondet its =
 let main =
   Arg.parse speclist anon_fun usage_msg;
 
-  let test = test_and in
-  (* let test = test_ldr in *)
+  (* let test = test_and in *)
+  let test = test_ldr in
 
   begin match exec_test (init_test test) with
-  | Success s -> print_chars_endline (FlatModel.show_state s)
+  | Accept s -> print_chars_endline (FlatModel.show_state s)
   | _ -> ()
   end
-
-  (* let ncall = FlatModel.first_not_disabled in
-   *
-   * let dcall = fun msg c ->
-   *   (\* print_chars_endline msg; *\)
-   *   c () in
-   *
-   * begin match FlatModel.run_test ncall dcall test (nat_of_int !bound) with
-   * | ERReturn (s, _) -> print_chars_endline (FlatModel.show_state s)
-   * | ERBound -> print_endline "Bound reached!"
-   * | ERDisabled -> print_endline "'disabled' propagated to the top?"
-   * | ERError msg -> print_endline "ERRORE:"; print_chars_endline msg
-   * end *)
 ;;

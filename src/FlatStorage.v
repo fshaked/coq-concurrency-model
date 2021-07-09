@@ -27,7 +27,7 @@ Require Import Decision.
 Module Make (Arc : ArcSig) : StorageSig Arc.
   Export Arc.
 
-  Record _state := mk_state { mem : list (thread_id_t * instruction_id_t * mem_write) }.
+  Record _state := mk_state { mem : list (thread_id * instruction_id * mem_write) }.
   (* Workaround: parameter can't be instantiated by an inductive type *)
   Definition state := _state.
 
@@ -40,7 +40,7 @@ Module Make (Arc : ArcSig) : StorageSig Arc.
     }.
   Close Scope string_scope.
 
-  Definition initial_state (mem : list (thread_id_t * instruction_id_t * mem_write))
+  Definition initial_state (mem : list (thread_id * instruction_id * mem_write))
     : state :=
     {| mem := mem |}.
 
@@ -94,7 +94,7 @@ Module Make (Arc : ArcSig) : StorageSig Arc.
              `{stateE state -< E}
              (* `{exceptE disabled -< E} *)
              (* `{exceptE error -< E} *)
-             (tid : thread_id_t) (iid : instruction_id_t) (w : mem_write)
+             (tid : thread_id) (iid : instruction_id) (w : mem_write)
     : itree E unit :=
     s <- get
     ;; put (s <| mem := (tid, iid, w)::s.(mem) |>).
@@ -103,7 +103,7 @@ Module Make (Arc : ArcSig) : StorageSig Arc.
              `{stateE state -< E}
              `{exceptE disabled -< E}
              `{exceptE error -< E}
-             (iid : instruction_id_t) (tid : thread_id_t)
+             (iid : instruction_id) (tid : thread_id)
     : storageE ~> itree E :=
     fun _ e =>
       match e with

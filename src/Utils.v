@@ -1,38 +1,41 @@
 From Coq Require Import
      Arith.PeanoNat
-     NArith.NArith
-     ZArith.ZArith
-     Numbers.DecimalString
      Lists.List
      Lists.ListSet
-     Strings.String
-     Strings.HexString
-     Strings.BinaryString
      Morphisms
-     Setoid
+     NArith.NArith
+     Numbers.DecimalString
      RelationClasses
-     Vectors.Fin.
+     Setoid
+     Strings.BinaryString
+     Strings.HexString
+     Strings.String
+     Vectors.Fin
+     ZArith.ZArith.
 
 Import StringSyntax.
 
 From ExtLib Require Import
-     Structures.Monads
-     Data.Monads.ListMonad.
+     Core.RelDec
+     Data.Map.FMapAList
+     Data.Monads.ListMonad
+     Structures.Maps
+     Structures.Monads.
 
 From bbv Require Import Word.
 Import Word.Notations.
 
 From ITree Require Import
-     ITree
-     ITreeFacts
      Events.MapDefault
+     Events.Nondeterminism
      Events.StateFacts
-     Events.Nondeterminism.
+     ITree
+     ITreeFacts.
 
 Import ITreeNotations.
-Import Monads.
-Import MonadNotation.
 Import ListNotations.
+Import MonadNotation.
+Import Monads.
 
 Local Open Scope list.
 Local Open Scope itree_scope.
@@ -200,14 +203,15 @@ End WrapEvent.
 
 
 Section Nondet.
-  Variant nondetFinE : Type -> Type :=
-  | NondetFin (n : nat) : nondetFinE (Fin.t n).
+  Variant chooseE (T : Type) : Type -> Type :=
+  | Choose : list T -> chooseE T T.
+  #[global] Arguments Choose {T}.
 
-  Definition choose {E} `{nondetFinE -< E}
-             {X} : ktree E (list X) X :=
+  Definition nondet {E T} `{chooseE nat -< E}
+    : ktree E (list T) (option T) :=
     fun l =>
-      n <- trigger (NondetFin (List.length l))
-      ;; ret (list_nth l n).
+      n <- trigger (Choose (List.seq 0 (List.length l)))
+      ;; ret (List.nth_error l n).
 End Nondet.
 
 
@@ -216,7 +220,7 @@ Section Scheduler.
    [EndExc]. *)
   Variant schedulerE (S : Type) : Type -> Type :=
   | Spawn : S -> schedulerE S unit
-  | Kill : list S -> schedulerE S unit
+  | Kill : S -> schedulerE S unit
   | StartExc : schedulerE S unit
   | EndExc : schedulerE S unit.
   #[global] Arguments Spawn {S}.
@@ -233,109 +237,73 @@ Section Scheduler.
     ;; 'tt <- trigger EndExc
     ;; ret r.
 
-  Definition is_eager {E S IR}
-             (is_eager_event : forall A, (schedulerE S +' E) A -> bool)
-             (it : itree (schedulerE S +' E) IR)
-    : bool :=
-    match observe it with
-    | RetF _ => true
-    | TauF _ => true
-    | @VisF _ _ _ X o k => is_eager_event X o
-    end.
-
-  Definition scheduler_helper {E S IR R}
-             (scheduler : R ->
-                          (list (S * itree (schedulerE S +' E) IR)) ->
-                          (option S) ->
-                          itree (nondetFinE +' E) R)
-             (eqb_S : S -> S -> bool)
-             (spawn : ktree (schedulerE S +' E) S IR)
-             (is_eager_event : forall A, (schedulerE S +' E) A -> bool)
-             (fold_results : R -> IR -> R)
-             (acc_result : R)
-             (its : list (S * itree (schedulerE S +' E) IR))
+  CoFixpoint scheduler {E S I R R'}
+             `{RelDec S (@eq S)}
+             (spawn : ktree (schedulerE S +' E) S R)
+             (hash_next : itree (schedulerE S +' E) R -> I)
+             (fold_results : R' -> R -> R')
+             (acc_result : R')
+             (its : alist S (itree (schedulerE S +' E) R))
              (exclusive : option S)
-    : itree (nondetFinE +' E) R :=
+    : itree (chooseE (S * I) +' E) R' :=
     match its with
     | [] => Ret acc_result
-    | _ =>
-      n <- match exclusive with
-          | Some id =>
-            match list_find_index its (fun '(id', _) => eqb_S id' id) with
-            | Some n => Ret n
-            | None =>
-              (* The exclusive itree killed itslef before ending the exclusive
-                 block. Maybe make this an error? *)
-              trigger (NondetFin (List.length its))
-            end
-          | None =>
-            match List.find (fun '(_, it) => is_eager is_eager_event it) its with
-            | Some (id, _) =>
-              match list_find_index its (fun '(id', _) => eqb_S id' id) with
-              | Some n => Ret n
-              | None => (* unreachable *)
-                trigger (NondetFin (List.length its))
-              end
-            | None => trigger (NondetFin (List.length its))
-            end
-          end
-      ;; let '(id, it) := list_nth its n in
+    | (id, it)::_ =>
+      id <- match exclusive with
+           | Some id => Ret id
+           | None =>
+             let es := List.map (fun '(id, it) => (id, hash_next it)) its in
+             '(id, _) <- trigger (Choose es)
+             ;; ret id
+           end
+      ;; let it := match lookup id its with
+                   | Some it => it
+                   | None => it (* FIXME: error? *)
+                   end in
          match observe it with
          | RetF r =>
-           let its := list_remove_nth (proj1_sig (Fin.to_nat n)) its in
-           Tau (scheduler (fold_results acc_result r) its exclusive)
+           let its := Maps.remove id its in
+           Tau (scheduler spawn hash_next fold_results (fold_results acc_result r) its None)
          | TauF it =>
-           let its := list_replace_nth (proj1_sig (Fin.to_nat n)) (id, it) its in
-           Tau (scheduler acc_result its exclusive)
+           let its := Maps.add id it its in
+           Tau (scheduler spawn hash_next fold_results acc_result its exclusive)
          | @VisF _ _ _ X o k =>
            match o with
            | inl1 o' =>
              match o' in schedulerE _ Y
-                   return X = Y -> itree (nondetFinE +' E) R with
+                   return X = Y -> itree (chooseE (S * I) +' E) R' with
              | Spawn id' =>
                fun pf =>
                  let it := k (eq_rect_r (fun T => T) tt pf) in
-                 let its := (id', spawn id')::list_replace_nth (proj1_sig (Fin.to_nat n)) (id, it) its in
-                 Tau (scheduler acc_result its exclusive)
-             | Kill ids' =>
+                 let its := Maps.add id' (spawn id') (Maps.add id it its) in
+                 Tau (scheduler spawn hash_next fold_results acc_result its exclusive)
+             | Kill id' =>
                fun pf =>
                  let it := k (eq_rect_r (fun T => T) tt pf) in
-                 let its := list_replace_nth (proj1_sig (Fin.to_nat n)) (id, it) its in
-                 let its := List.filter
-                              (* Remove all the itrees with id in [ids'] *)
-                              (fun '(id', _) => negb (List.existsb (eqb_S id') ids'))
-                              its in
-                 Tau (scheduler acc_result its exclusive)
+                 let its := Maps.add id it its in
+                 let its := Maps.remove id' its in
+                 let exclusive := if rel_dec id id' then
+                                    (* A thread just killed itslef *)
+                                    None
+                                  else exclusive in
+                 Tau (scheduler spawn hash_next fold_results acc_result its exclusive)
              | StartExc =>
                fun pf =>
                  let it := k (eq_rect_r (fun T => T) tt pf) in
-                 let its := list_replace_nth (proj1_sig (Fin.to_nat n)) (id, it) its in
-                 Tau (scheduler acc_result its (Some id))
+                 let its := Maps.add id it its in
+                 Tau (scheduler spawn hash_next fold_results acc_result its (Some id))
              | EndExc =>
                fun pf =>
                  let it := k (eq_rect_r (fun T => T) tt pf) in
-                 let its := list_replace_nth (proj1_sig (Fin.to_nat n)) (id, it) its in
-                 Tau (scheduler acc_result its None)
+                 let its := Maps.add id it its in
+                 Tau (scheduler spawn hash_next fold_results acc_result its None)
              end eq_refl
            | inr1 o' =>
-             Vis (inr1 o') (fun x =>
-                              let its := list_replace_nth (proj1_sig (Fin.to_nat n)) (id, k x) its in
-                              scheduler acc_result its exclusive)
+             Vis (inr1 o') (fun x => let its := Maps.add id (k x) its in
+                                  scheduler spawn hash_next fold_results acc_result its exclusive)
            end
          end
     end.
-
-  CoFixpoint scheduler {E S IR R}
-             (eqb_S : S -> S -> bool)
-             (spawn : ktree (schedulerE S +' E) S IR)
-             (is_eager_event : forall A, (schedulerE S +' E) A -> bool)
-             (fold_results : R -> IR -> R)
-             (acc_result : R)
-             (its : list (S * itree (schedulerE S +' E) IR))
-             (exclusive : option S)
-    : itree (nondetFinE +' E) R :=
-    scheduler_helper (scheduler eqb_S spawn is_eager_event fold_results)
-                     eqb_S spawn is_eager_event fold_results acc_result its exclusive.
 End Scheduler.
 
 

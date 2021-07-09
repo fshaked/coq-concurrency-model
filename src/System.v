@@ -8,11 +8,14 @@ Import ListNotations.
 
 Open Scope string_scope.
 
+From ExtLib Require Import
+     Core.RelDec.
+
 From ITree Require Import
-     ITree
-     ITreeFacts
      Events.Exception
-     Events.State.
+     Events.State
+     ITree
+     ITreeFacts.
 
 Import Monads.
 Import ITreeNotations.
@@ -20,12 +23,13 @@ Import ITreeNotations.
 (* The [sum1] types with automatic application of commutativity and
    associativity are prone to infinite instance resolution loops.
    This bounds the instance search depth: *)
-Typeclasses eauto := 5.
+Typeclasses eauto := 9.
 
 From RecordUpdate Require Import RecordSet.
 Import RecordSetNotations.
 
 Require Import Utils Types.
+Require Import  Decision.
 
 Module Make (Arc : ArcSig)
        (Thread : ThreadSig Arc)
@@ -37,31 +41,69 @@ Module Make (Arc : ArcSig)
   Existing Instance Storage.showable_state.
 
   Definition thread_it {E}
-             `{wrapE Thread.E (instruction_id_t * thread_id_t) -< E}
-             `{nondetFinE -< E}
+             `{chooseE (instruction_id * bool) -< E}
+             `{wrapE Thread.E (instruction_id * thread_id) -< E}
+             `{chooseE mem_read_id -< E}
+             `{chooseE mem_write_id -< E}
+             `{chooseE nat -< E}
+             `{exceptE error -< E}
              `{debugE -< E}
-             (tid : thread_id_t)
+             (tid : thread_id)
     : itree E (Types.result unit unit) :=
-    let it := Thread.denote 1 in
+    let it := Thread.denote (InstructionID 1) in
     let it := map_wrap_event_in_it Thread.E (fun iid => (iid, tid)) _ it in
     resum_it _ it.
 
+  Definition is_eager {R} : itree (schedulerE thread_id
+                                   +' chooseE (instruction_id * bool)
+                                   +' wrapE Thread.E (instruction_id * thread_id)
+                                   +' chooseE mem_read_id
+                                   +' chooseE mem_write_id
+                                   +' chooseE nat
+                                   +' exceptE error
+                                   +' debugE) R
+                              -> bool :=
+      fun it =>
+        match observe it with
+        | RetF _ => true
+        | TauF _ => true
+        | @VisF _ _ _ X o k =>
+          match o with
+          | inl1 e' => true (* schedulerE thread_id *)
+          | inr1 (inl1 _) => true (* chooseE (instruction_id * bool) *)
+          | inr1 (inr1 e') => Thread.is_eager_event _ _ e'
+          end
+        end.
+
+  Instance RelDec_thread_id : RelDec (@eq thread_id) :=
+    { rel_dec := fun i1 i2 => isTrue (i1 = i2) }.
+
+  Instance RelDec_thread_id_Correct: RelDec_Correct RelDec_thread_id.
+  Proof.
+    constructor. intros x y.
+    unfold rel_dec. simpl.
+    unfold isTrue. destruct decide; split; auto.
+    intros. discriminate.
+  Qed.
+
   Definition denote {E}
-             `{wrapE Thread.E (instruction_id_t * thread_id_t) -< E}
-             `{nondetFinE -< E}
+             `{chooseE (thread_id * bool) -< E}
+             `{chooseE (instruction_id * bool) -< E}
+             `{wrapE Thread.E (instruction_id * thread_id) -< E}
+             `{chooseE mem_read_id -< E}
+             `{chooseE mem_write_id -< E}
+             `{chooseE nat -< E}
+             `{exceptE error -< E}
              `{debugE -< E}
-             (tids : list thread_id_t)
+             (tids : list thread_id)
     : itree E unit :=
     let its := List.map (fun tid => (tid, thread_it tid)) tids in
-    let it :=
-        scheduler
-          Nat.eqb
-          (fun tid => Ret (Reject tt)) (* spawn *)
-          (* TODO: do we want to support spawning of new threads? *)
-          (*        Probably not. *)
-          (fun _ _ => false)
-          (fun 'tt _ => tt) (* fold_results *)
-          tt its None in
+    let it := scheduler (fun tid => Ret (Reject tt)) (* spawn *)
+                        (* TODO: do we want to support spawning of new threads? *)
+                        (*       Probably not. *)
+                        is_eager
+                        (fun 'tt _ => tt) (* fold_results *)
+                        tt its None in
     resum_it _ it.
 
   Record state :=
@@ -85,21 +127,26 @@ Module Make (Arc : ArcSig)
     }.
   Close Scope string_scope.
 
-  Definition initial_state (mem : list (thread_id_t * instruction_id_t * mem_write))
+  Definition initial_state (mem : list (thread_id * instruction_id * mem_write))
              (entry_locs : list mem_loc)
     : state :=
     {| storage := Storage.initial_state mem;
        threads := List.map
                     (* The first iid is 1; we use iid 0 for reg-writes with initial values *)
-                    (Thread.initial_state 1)
+                    (Thread.initial_state (InstructionID 1))
                     entry_locs |}.
 
-  Definition handle_thread_E {E}
-             `{stateE state -< E}
-             `{exceptE disabled -< E}
-             `{exceptE Types.error -< E}
-             `{debugE -< E}
-    : wrapE Thread.E (instruction_id_t * thread_id_t) ~> itree (E) :=
+  Definition handle_thread_E
+             (* {E} *)
+             (* `{stateE state -< E} *)
+             (* `{exceptE disabled -< E} *)
+             (* `{exceptE Types.error -< E} *)
+             (* `{debugE -< E} *)
+    : wrapE Thread.E (instruction_id * thread_id) ~>
+            itree (stateE state
+                   +' exceptE disabled
+                   +' exceptE Types.error
+                   +' debugE) :=
     fun _ e =>
       let '(Wrap e' (iid, tid)) := e in
       let it : itree (storageE
@@ -128,113 +175,134 @@ Module Make (Arc : ArcSig)
       'tt <- trigger (Debug ("handle_thread_E: tid " ++ show tid
                                                     ++ ", iid " ++ show iid))
       ;; s <- get
-      ;; thr_state <- try_unwrap_option (List.nth_error s.(threads) tid)
+      ;; let '(ThreadID tidn) := tid in
+         thr_state <- try_unwrap_option (List.nth_error s.(threads) tidn)
                                        "get_thread_state: thread is missing"
       ;; let it := run_state it (thr_state : Thread.state) in
          let it := run_state it s.(storage) in
          '(sto_state, (thr_state, ans)) <- resum_it _ it
-      ;; let ts := list_replace_nth tid thr_state s.(threads) in
+      ;; let ts := list_replace_nth tidn thr_state s.(threads) in
          put (s <| storage := sto_state |> <| threads := ts |>)
       ;; ret ans.
 
-  Definition run {E}
-             `{nondetFinE -< E}
-             `{exceptE disabled -< E}
-             `{exceptE error -< E}
-             `{debugE -< E}
-             (mem : list (thread_id_t * instruction_id_t * mem_write))
-             (entry_locs : list mem_loc)
-    : itree E (state * unit) :=
-    let tids := List.seq 0 (List.length entry_locs) in
-    let it := interp (bimap handle_thread_E (id_ _)) (denote tids) in
-    run_state (resum_it _ it) (initial_state mem entry_locs).
-
-
-  Section Execute.
-    Notation execE := (nondetFinE +' exceptE disabled +' exceptE error
+  Notation systemE := (chooseE (thread_id * bool)
+                       +' chooseE (instruction_id * bool)
+                       +' chooseE mem_read_id
+                       +' chooseE mem_write_id
+                       +' chooseE nat
+                       +' exceptE disabled
+                       +' exceptE error
                        +' debugE)%type.
 
+  Definition run
+             (* {E} *)
+             (* `{chooseE (thread_id * bool) -< E} *)
+             (* `{chooseE (instruction_id * bool) -< E} *)
+             (* `{chooseE mem_read_id -< E} *)
+             (* `{chooseE mem_write_id -< E} *)
+             (* `{chooseE nat -< E} *)
+             (* `{exceptE disabled -< E} *)
+             (* `{exceptE error -< E} *)
+             (* `{debugE -< E} *)
+             (mem : list (thread_id * instruction_id * mem_write))
+             (entry_locs : list mem_loc)
+    : itree systemE (state * unit) :=
+    let tids := List.map ThreadID (List.seq 0 (List.length entry_locs)) in
+    let it
+        : itree
+            (chooseE (thread_id * bool) +' chooseE (instruction_id * bool)
+             +' wrapE Thread.E (instruction_id * thread_id)
+             +' chooseE mem_read_id +' chooseE mem_write_id +' chooseE nat
+             +' exceptE error +' debugE) unit
+        := denote tids in
+    let it : itree
+               (stateE state
+                +' chooseE (thread_id * bool) +' chooseE (instruction_id * bool)
+                +' chooseE mem_read_id +' chooseE mem_write_id +' chooseE nat
+                +' exceptE disabled +' exceptE error +' debugE) unit
+        := interp (case_ (cat inl_ inr_) (* chooseE (thread_id * bool) *)
+                         (case_ (cat inl_ (cat inr_ inr_)) (* chooseE (instruction_id * bool) *)
+                                     (case_ (cat handle_thread_E (* wrapE Thread.E (instruction_id * thread_id) *)
+                                                 (case_ inl_ (* stateE state *)
+                                                        (case_ (cat inl_ (cat inr_ (cat inr_ (cat inr_ (cat inr_ (cat inr_ inr_)))))) (* exceptE disabled *)
+                                                               (case_ (cat inl_ (cat inr_ (cat inr_ (cat inr_ (cat inr_ (cat inr_ (cat inr_ inr_))))))) (* exceptE error *)
+                                                                      (cat inr_ (cat inr_ (cat inr_ (cat inr_ (cat inr_ (cat inr_ (cat inr_ inr_))))))))))) (* debugE *)
+                                            (case_ (cat inl_ (cat inr_ (cat inr_ inr_))) (* chooseE mem_read_id *)
+                                                   (case_ (cat inl_ (cat inr_ (cat inr_ (cat inr_ inr_)))) (* chooseE mem_write_id *)
+                                                          (case_ (cat inl_ (cat inr_ (cat inr_ (cat inr_ (cat inr_ inr_))))) (* chooseE nat *)
+                                                                 (case_ (cat inl_ (cat inr_ (cat inr_ (cat inr_ (cat inr_ (cat inr_ (cat inr_ inr_))))))) (* exceptE error *)
+                                                                        (cat inr_ (cat inr_ (cat inr_ (cat inr_ (cat inr_ (cat inr_ (cat inr_ inr_)))))))))))))) (* debugE *)
+                  it in
+    run_state it (initial_state mem entry_locs).
+
+  Section Step.
     Notation R := (state * unit)%type.
-    Variant exec_result :=
-    | ERReturn : R -> exec_result
-    | ERBound : exec_result
-    | ERDisabled : exec_result
-    | ERError : string -> exec_result.
-
-    Definition nondet_callback := forall n:nat, (Fin.t n -> exec_result) -> exec_result.
-    Variable ncall : nondet_callback.
-
-    Definition debug_callback := string -> (unit -> exec_result) -> exec_result.
-    Variable dcall : debug_callback.
 
     Variant step_result :=
-    | SNondet : list (itree execE R) -> step_result
-    | SNext : option string -> itree execE R -> step_result
-    | SSuccess : R -> step_result
+    | SNondet : list (itree systemE R * bool) -> step_result
+    | SNext : option string -> itree systemE R -> step_result
+    | SAccept : R -> step_result
     | SReject : step_result
     | SError : string -> step_result.
 
-    Definition step (it : itree execE R) : step_result :=
+    Definition step (it : itree systemE R) : step_result :=
       match observe it with
-      | RetF r => SSuccess r
+      | RetF r => SAccept r
       | TauF it => SNext None it
       | @VisF _ _ _ X o k =>
         match o with
-        | inl1 o' =>
-          match o' in nondetFinE Y return X = Y -> _ with
-          | NondetFin n =>
+        | inl1 o' => (* chooseE (thread_id * bool) *)
+          match o' in chooseE _ Y return X = Y -> _ with
+          | Choose l =>
             fun pf =>
-              SNondet (List.fold_right (fun i acc =>
-                                         match Fin.of_nat i n with
-                                         | inleft i =>
-                                           let i := eq_rect_r (fun T => T) i pf in
-                                           k i :: acc
-                                         | _  => acc
-                                         end)
-                                       []
-                                       (List.seq 0 n))
+              SNondet (List.map (fun '(tid, eager) =>
+                                   let i := eq_rect_r (fun T => T) (tid, eager) pf in
+                                   (k i, eager))
+                                l)
           end eq_refl
-        | inr1 (inl1 (Throw (Disabled tt))) => SReject
-        | inr1 (inr1 (inl1 (Throw (Error msg)))) => SError msg
-        | inr1 (inr1 (inr1 o')) =>
+        | inr1 (inl1 o') => (* chooseE (instruction_id * bool) *)
+          match o' in chooseE _ Y return X = Y -> _ with
+          | Choose l =>
+            fun pf =>
+              SNondet (List.map (fun '(iid, eager) =>
+                                   let i := eq_rect_r (fun T => T) (iid, eager) pf in
+                                   (k i, eager))
+                                l)
+          end eq_refl
+        | inr1 (inr1 (inl1 o')) => (* chooseE mem_read_id *)
+          match o' in chooseE _ Y return X = Y -> _ with
+          | Choose l =>
+            fun pf =>
+              SNondet (List.map (fun rid =>
+                                   let i := eq_rect_r (fun T => T) rid pf in
+                                   (k i, false))
+                                l)
+          end eq_refl
+        | inr1 (inr1 (inr1 (inl1 o'))) => (* chooseE mem_write_id *)
+          match o' in chooseE _ Y return X = Y -> _ with
+          | Choose l =>
+            fun pf =>
+              SNondet (List.map (fun wid =>
+                                   let i := eq_rect_r (fun T => T) wid pf in
+                                   (k i, false))
+                                l)
+          end eq_refl
+        | inr1 (inr1 (inr1 (inr1 (inl1 o')))) => (* chooseE nat *)
+          match o' in chooseE _ Y return X = Y -> _ with
+          | Choose l =>
+            fun pf =>
+              SNondet (List.map (fun n =>
+                                   let i := eq_rect_r (fun T => T) n pf in
+                                   (k i, false))
+                                l)
+          end eq_refl
+        | inr1 (inr1 (inr1 (inr1 (inr1 (inl1 (Throw (Disabled tt))))))) => SReject
+        | inr1 (inr1 (inr1 (inr1 (inr1 (inr1 (inl1 (Throw (Error msg)))))))) => SError msg
+        | inr1 (inr1 (inr1 (inr1 (inr1 (inr1 (inr1 o')))))) =>
           match o' in debugE Y return X = Y -> _ with
           | Debug msg => fun pf => SNext (Some msg) (k (eq_rect_r (fun T => T) tt pf))
           end eq_refl
         end
       end.
-
-    Fixpoint exec_helper (bound : nat) (it : itree execE R) : exec_result :=
-      match bound with
-      | 0 => ERBound
-      | S bound =>
-        match observe it with
-        | RetF r => ERReturn r
-        | TauF it => exec_helper bound it
-        | @VisF _ _ _ X o k =>
-          match o with
-          | inl1 o' =>
-            match o' in nondetFinE Y return X = Y -> _ with
-            | NondetFin n =>
-              fun pf => ncall n (fun i =>
-                                let i := eq_rect_r (fun T => T) i pf in
-                                exec_helper bound (k i))
-            end eq_refl
-          | inr1 (inl1 (Throw (Disabled tt))) => ERDisabled
-          | inr1 (inr1 (inl1 (Throw (Error msg)))) => ERError msg
-          | inr1 (inr1 (inr1 o')) =>
-            match o' in debugE Y return X = Y -> _ with
-            | Debug msg => fun pf =>
-                            dcall msg (fun 'tt =>
-                                         exec_helper bound (k (eq_rect_r (fun T => T) tt pf)))
-            end eq_refl
-          end
-        end
-      end.
-
-    Definition exec (bound : nat) (mem : list (thread_id_t * instruction_id_t * mem_write))
-               (entry_locs : list mem_loc)
-      : exec_result :=
-      let it := run mem entry_locs in
-      exec_helper bound it.
-  End Execute.
+  End Step.
 End Make.

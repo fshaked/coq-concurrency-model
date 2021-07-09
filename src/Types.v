@@ -67,10 +67,37 @@ Variant result A R : Type :=
 Arguments Accept {A R}.
 Arguments Reject {A R}.
 
-Definition thread_id_t := Utils.id_t.
-Definition instruction_id_t := Utils.id_t.
-Definition mem_read_id_t := Utils.id_t.
-Definition mem_write_id_t := Utils.id_t.
+Variant thread_id := ThreadID : nat -> thread_id.
+
+Instance decision_thread_id_eq : forall (m n : thread_id), Decision (m = n).
+Proof. decision_eq. Qed.
+
+Instance showable_thread_id : Showable thread_id :=
+  { show := fun '(ThreadID tid) => show tid }.
+
+Variant instruction_id := InstructionID : nat -> instruction_id.
+
+Instance decision_instruction_id_eq : forall (m n : instruction_id), Decision (m = n).
+Proof. decision_eq. Qed.
+
+Instance showable_instruction_id : Showable instruction_id :=
+  { show := fun '(InstructionID iid) => show iid }.
+
+Variant mem_read_id := MemReadID : nat -> mem_read_id.
+
+Instance decision_mem_read_id_eq : forall (m n : mem_read_id), Decision (m = n).
+Proof. decision_eq. Qed.
+
+Instance showable_mem_read_id : Showable mem_read_id :=
+  { show := fun '(MemReadID rid) => show rid }.
+
+Variant mem_write_id := MemWriteID : nat -> mem_write_id.
+
+Instance decision_mem_write_id_eq : forall (m n : mem_write_id), Decision (m = n).
+Proof. decision_eq. Qed.
+
+Instance showable_mem_write_id : Showable mem_write_id :=
+  { show := fun '(MemWriteID wid) => show wid }.
 
 Variant mem_loc : Type := MemLoc : nat -> mem_loc.
 Definition mem_loc_to_nat (l : mem_loc) : nat := let '(MemLoc n) := l in n.
@@ -312,12 +339,12 @@ Module ArcCoreFacts (ArcCore : ArcCoreSig).
   Existing Instance ArcCore.InsSem.Core.showable_mem_write_kind.
 
   Record mem_read : Type :=
-    mk_mem_read { read_id : mem_read_id_t;
+    mk_mem_read { read_id : mem_read_id;
                   read_footprint : mem_slc;
                   read_kind : mem_read_kind }.
 
   Record _mem_write : Type :=
-    mk_mem_write { write_id : mem_write_id_t;
+    mk_mem_write { write_id : mem_write_id;
                    write_footprint : mem_slc;
                    write_val : mem_slc_val;
                    write_kind : mem_write_kind }.
@@ -328,7 +355,7 @@ Module ArcCoreFacts (ArcCore : ArcCoreSig).
         fun w =>
           (show w.(write_footprint) ++ " = " ++ show (List.rev (List.map Hex w.(write_val))) ++ "(" ++ show w.(write_kind) ++ ")")%string
     }.
-  Definition mem_reads_from : Type := list ((thread_id_t * instruction_id_t * mem_write_id_t) *
+  Definition mem_reads_from : Type := list ((thread_id * instruction_id * mem_write_id) *
                                             (mem_slc * mem_slc_val)).
 
   Variant _storageE : Type -> Type :=
@@ -349,17 +376,30 @@ Module Type ThreadSig (Arc : ArcSig).
 
   Parameter state : Type.
   Context `{showable_state: Showable state}.
-  Parameter initial_state : instruction_id_t -> mem_loc -> state.
+  Parameter initial_state : instruction_id -> mem_loc -> state.
 
   Parameter E : Type -> Type.
   Context `{showable_E: forall A, Showable (E A)}.
 
+  Parameter is_eager_event : forall A T, (wrapE E T
+                                     +' chooseE mem_read_id
+                                     +' chooseE mem_write_id
+                                     +' chooseE nat
+                                     +' exceptE error
+                                     +' debugE) A
+                                    -> bool.
+
   Parameter denote : forall (F : Type -> Type)
-                      `{HasWrapThreadIID: wrapE E instruction_id_t -< F}
-                      `{HasNondetFin: nondetFinE -< F}
+                      `{HasChooseIidBool: chooseE (instruction_id * bool) -< F}
+                      `{HasWrapE: wrapE E instruction_id -< F}
+                      `{HasChooseMemRead: chooseE mem_read_id -< F}
+                      `{HasChooseMemWrite: chooseE mem_write_id -< F}
+                      `{HasChooseNat: chooseE nat -< F}
+                      `{HasError: exceptE error -< F}
                       `{HasDebug: debugE -< F},
-      ktree F instruction_id_t (result unit unit).
-  Arguments denote {F HasWrapThreadIID HasNondetFin HasDebug}.
+      ktree F instruction_id (result unit unit).
+  Arguments denote {F HasChooseIidBool HasWrapE HasChooseMemRead HasChooseMemWrite
+                      HasChooseNat HasError HasDebug}.
 
   Parameter handle_E : forall (F : Type -> Type)
                         `{HasStorage: storageE -< F}
@@ -367,7 +407,7 @@ Module Type ThreadSig (Arc : ArcSig).
                         `{HasExceptDisabled: exceptE disabled -< F}
                         `{HasExceptError: exceptE error -< F}
                         `{HasDebug: debugE -< F},
-      instruction_id_t -> E ~> itree F.
+      instruction_id -> E ~> itree F.
   Arguments handle_E {F HasStorage HasState HasExceptDisabled HasExceptError
                         HasDebug}.
 End ThreadSig.
@@ -377,13 +417,13 @@ Module Type StorageSig (Arc : ArcSig).
 
   Parameter state : Type.
   Context `{showable_state: Showable state}.
-  Parameter initial_state : list (thread_id_t * instruction_id_t * mem_write) -> state.
+  Parameter initial_state : list (thread_id * instruction_id * mem_write) -> state.
 
   Parameter handle_storageE : forall (E : Type -> Type)
                                `{HasState: stateE state -< E}
                                `{HasExceptDisabled: exceptE disabled -< E}
                                `{HasExceptError: exceptE error -< E},
-                             instruction_id_t -> thread_id_t ->
+                             instruction_id -> thread_id ->
                              storageE ~> itree E.
   Arguments handle_storageE {E HasState HasExceptDisabled HasExceptError}.
 End StorageSig.
