@@ -33,7 +33,7 @@ Require Import Types Utils.
 Require Import  Decision.
 
 Module Base (Arc : ArcSig).
-  Import Arc.
+  Export Arc.
 
   Section Denote.
     Variant _E : Type -> Type :=
@@ -484,7 +484,6 @@ End Base.
 
 Module Type ArcThreadSig.
   Declare Module Arc : ArcSig.
-  Export Arc.
   Module Base := Base Arc.
   Export Base.
 
@@ -492,12 +491,13 @@ Module Type ArcThreadSig.
                                      decoded_instruction_state -> bool.
 End ArcThreadSig.
 
+(******************************************************************************)
+
 Require SimpleA64InsSem.
 
 Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
   Module Arc := SimpleA64InsSem.Armv8A.
-  Export SimpleA64InsSem.Armv8A.
-  Module Base := Base SimpleA64InsSem.Armv8A.
+  Module Base := Base Arc.
   Export Base.
 
   Section InstructionKind.
@@ -619,9 +619,6 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
       ins.(ins_finished). (* || ins.rmw_finished_load_snapshot <> Nothing *)
   End PossibleReadsWrites.
 
-
-
-
   Open Scope bool_scope.
   (* LEM: machineDefThreadSubsystem.lem: pop_memory_read_request_cand *)
   Definition mem_read_request_cand (pref : list decoded_instruction_state)
@@ -669,7 +666,7 @@ End SimpleArmv8A.
 (******************************************************************************)
 
 Module Make (Arc : ArcSig) (ArcThread : ArcThreadSig with Module Arc := Arc) : ThreadSig Arc.
-  Export ArcThread.
+  Import ArcThread.
 
   Definition state := state.
   Definition showable_state := showable_state.
@@ -846,14 +843,14 @@ Module Make (Arc : ArcSig) (ArcThread : ArcThreadSig with Module Arc := Arc) : T
     s <| instruction_tree := helper s.(instruction_tree) |>.
 
   Section Handle_instruction_instance.
+    Variable iid : instruction_id.
+
     Context {F : Type -> Type}.
     Context `{storageE -< F}.
     Context `{stateE state -< F}.
     Context `{exceptE disabled -< F}.
     Context `{exceptE error -< F}.
     Context `{debugE -< F}.
-
-    Variable iid : instruction_id.
 
     Definition try_fetch_and_decode_or_restart
       : itree F (list instruction_id * ast) :=
