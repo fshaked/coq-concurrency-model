@@ -29,19 +29,14 @@ From bbv Require Import BinNotation.
 Require Import Utils Types System
         SimpleA64InsSem FlatThread FlatStorage.
 
-Module Arc := SimpleA64InsSem.Armv8.
+Module Arc := SimpleA64InsSem.Armv8A.
 Import Arc.
 Import AArch64Notations.
 Open Scope a64_scope.
 
-Module Thread := FlatThread.Make Arc.
+Module Thread := FlatThread.Make Arc FlatThread.SimpleArmv8A.
 Module Storage := FlatStorage.Make Arc.
-
 Module Model := System.Make Arc Thread Storage.
-
-
-
-
 
 Definition unsafe_encode a :=
   let bad_encoding : Types.mem_slc_val := [0; 0; 0; 0] in

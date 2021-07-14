@@ -49,6 +49,8 @@ Typeclasses eauto := 5.
 
 Require Import Decision.
 
+Infix "--->" := implb (at level 51, right associativity) : bool_scope.
+
 Definition newline : string := "
 ".
 

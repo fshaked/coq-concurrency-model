@@ -636,7 +636,7 @@ Module AArch64 <: InsSemSig.
     end.
 End AArch64.
 
-Module Armv8Core <: ArcCoreSig.
+Module Armv8ACore <: ArcCoreSig.
   Module InsSem := AArch64.
   Export InsSem.
 
@@ -657,10 +657,10 @@ Module Armv8Core <: ArcCoreSig.
     : list (mem_slc * mem_slc_val) :=
     (* FIXME: *)
     [(slc, val)].
-End Armv8Core.
+End Armv8ACore.
 
-Module Armv8 <: ArcSig.
-  Module Core := Armv8Core.
+Module Armv8A <: ArcSig.
+  Module Core := Armv8ACore.
   Module CoreFacts :=  ArcCoreFacts Core.
   Export CoreFacts.
-End Armv8.
+End Armv8A.
