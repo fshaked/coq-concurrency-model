@@ -376,7 +376,7 @@ Module Type ThreadSig (Arc : ArcSig).
 
   Parameter state : Type.
   Context `{showable_state: Showable state}.
-  Parameter initial_state : instruction_id -> mem_loc -> state.
+  Parameter initial_state : thread_id -> instruction_id -> mem_loc -> state.
 
   Parameter E : Type -> Type.
   Context `{showable_E: forall A, Showable (E A)}.

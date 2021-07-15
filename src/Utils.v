@@ -90,6 +90,12 @@ Variant debugE : Type -> Type :=
 | Debug : string -> debugE unit.
 
 Section List.
+  Fixpoint list_forall_suffixb {T} (f : list T -> bool) (l : list T) : bool :=
+    f l && match l with
+           | nil => true
+           | _::l => list_forall_suffixb f l
+           end.
+
   Fixpoint list_replace_nth {T} (n : nat) (x : T) (l : list T) : list T :=
     match n, l with
     | O, _::t => x::t

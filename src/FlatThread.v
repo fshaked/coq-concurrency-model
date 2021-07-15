@@ -7,7 +7,11 @@ From Coq Require Import
 Import ListNotations.
 
 From ExtLib Require Import
-     Core.RelDec.
+     Core.RelDec
+     Data.Monads.ListMonad
+     Monads.
+
+Import MonadNotation.
 
 From ITree Require Import
      ITree
@@ -17,6 +21,8 @@ From ITree Require Import
 
 Import Monads.
 Import ITreeNotations.
+
+Open Scope monad_scope.
 
 (* The [sum1] types with automatic application of commutativity and
    associativity are prone to infinite instance resolution loops.
@@ -298,8 +304,8 @@ Module Base (Arc : ArcSig).
       mk_reg_read_state { rrs_slc : reg_slc;
                           rrs_feeding_addr : bool;
                           rrs_reads_from : list (instruction_id * nat * reg_slc_val);
-                          (* the [nat] is an index into [ins_reg_writes.rws_slc]
-                                                of the instruction pointed by the [instruction_id]. *)
+                          (* the [nat] is an index into [ins_reg_writes] of the
+                             instruction pointed by the [instruction_id]. *)
                           rrs_val : option (reg_val rrs_slc.(rs_size)) }.
 
     Local Open Scope string_scope.
@@ -381,27 +387,25 @@ Module Base (Arc : ArcSig).
     Instance showable_decoded_instruction_state : Showable decoded_instruction_state :=
       { show :=
           fun i =>
-            show i.(ins_id) ++ ":[" ++ show i.(ins_loc) ++ "] " ++
-                                                        ("'" ++ show i.(ins_ast) ++ "' " ++
-                                                                                 (if i.(ins_finished) then "(finished)"
-                                                                                  else "(in-flight)") ++ newline ++
-                                                                                 match i.(ins_reg_reads) with
-                                                                                 | [] => ""
-                                                                                 | _ => "  reg reads: " ++ show i.(ins_reg_reads) ++ newline
-                                                                                 end ++
-                                                                                 match i.(ins_reg_writes) with
-                                                                                 | [] => ""
-                                                                                 | _ => "  reg writes: " ++ show i.(ins_reg_writes) ++ newline
-                                                                                 end ++
-                                                                                 match i.(ins_mem_reads) with
-                                                                                 | Some rs => "  mem reads: " ++ show rs ++ newline
-                                                                                 | None => ""
-                                                                                 end ++
-                                                                                 match i.(ins_mem_writes) with
-                                                                                 | Some ws => "  mem writes: " ++ show ws ++ newline
-                                                                                 | None => ""
-                                                                                 end
-                                                        )%string
+            (show i.(ins_id) ++ ":[" ++ show i.(ins_loc) ++ "] ")
+              ++ ("'" ++ show i.(ins_ast) ++ "' " ++ (if i.(ins_finished) then "(finished)"
+                                                      else "(in-flight)") ++ newline)
+              ++ match i.(ins_reg_reads) with
+                 | [] => ""
+                 | _ => "  reg reads: " ++ show i.(ins_reg_reads) ++ newline
+                 end
+              ++ match i.(ins_reg_writes) with
+                 | [] => ""
+                 | _ => "  reg writes: " ++ show i.(ins_reg_writes) ++ newline
+                 end
+              ++ match i.(ins_mem_reads) with
+                 | Some rs => "  mem reads: " ++ show rs ++ newline
+                 | None => ""
+                 end
+              ++ match i.(ins_mem_writes) with
+                 | Some ws => "  mem writes: " ++ show ws ++ newline
+                 | None => ""
+                 end
       }.
     Close Scope string_scope.
 
@@ -420,6 +424,7 @@ Module Base (Arc : ArcSig).
                                                {| rsv_slc := slc; rsv_val := None |}
                                                [] false)
                                     info.(output_regs);
+
          ins_mem_reads := None;
          ins_mem_writes := None;
          ins_finished := false |}.
@@ -427,13 +432,14 @@ Module Base (Arc : ArcSig).
     Definition ins_tree := (tree decoded_instruction_state
                                (tree (instruction_id * mem_loc) unit))%type.
     Record _state :=
-      mk_state { next_iid : instruction_id;
+      mk_state { id : thread_id;
+                 next_iid : instruction_id;
                  instruction_tree : ins_tree }.
     (* Workaround: parameter can't be instantiated by an inductive type *)
     Definition state := _state.
 
     #[global] Instance eta_state : Settable _ :=
-      settable! mk_state <next_iid; instruction_tree>.
+      settable! mk_state <id; next_iid; instruction_tree>.
 
     Local Open Scope string_scope.
     Instance showable_state : Showable state :=
@@ -500,11 +506,14 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
   Module Base := Base Arc.
   Export Base.
 
+  Open Scope bool_scope.
+
   Section InstructionKind.
     Variable a : ast.
 
     Definition is_strong_memory_barrier : bool := (* FIXME: *) let a := a in false.
     Definition is_ld_barrier : bool := (* FIXME: *) let a := a in false.
+    Definition is_st_barrier : bool := (* FIXME: *) let a := a in false.
     Definition is_instruction_barrier : bool := (* FIXME: *) let a := a in false.
 
     Definition is_load : bool :=
@@ -512,12 +521,74 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
       | Load _ _ _ => true
       | _ => false
       end.
+    Definition is_load_acquire : bool := (* FIXME: *) let a := a in false.
+    Definition is_load_exclusive : bool := (* FIXME: *) let a := a in false.
+
+    Definition is_store : bool :=
+      match a with
+      | Store _ _ _ => true
+      | _ => false
+      end.
     Definition is_store_release : bool := (* FIXME: *) let a := a in false.
-    Definition is_load_acquire  : bool := (* FIXME: *) let a := a in false.
+    Definition is_store_exclusive : bool := (* FIXME: *) let a := a in false.
+
+    Definition is_load_atomic : bool := (* FIXME: *) let a := a in false.
+    Definition is_store_atomic : bool := (* FIXME: *) let a := a in false.
+    Definition is_rmw : bool := (* FIXME: *) let a := a in false.
   End InstructionKind.
 
-  Section PossibleReadsWrites.
+  (** Instruction instance predicates *)
+  Section InstructionKindState.
     Variable ins : decoded_instruction_state.
+
+    (* A failed store-conditional/exclusive is not considered a memory access after it is finished *)
+
+    Definition atomic_store_determined_to_fail : bool :=
+      (* FIXME: *)
+      (* ins.successful_atomic_store = Just false. *)
+      let ins := ins in false.
+
+    (* let atomic_store_determined_to_succeed (i : instruction_instance 'i) : bool =  *)
+    (*   i.successful_atomic_store = Just true *)
+
+    Definition is_viable_store : bool :=
+      is_store ins.(ins_ast) &&
+      negb (atomic_store_determined_to_fail && ins.(ins_finished)).
+
+    Definition is_viable_memory_access : bool :=
+      is_load ins.(ins_ast) || is_viable_store.
+
+    Definition is_cond_branch : bool :=
+      (* FIXME: *)
+      (* Set.size i.nias > 1 *)
+      let ins := ins in false.
+
+    Definition is_indirect_branch : bool :=
+      (* FIXME: *)
+      (* exists (nia IN i.nias). nia = NIA_indirect_address *)
+      let ins := ins in false.
+
+    Definition write_initiated : bool := isTrue (ins.(ins_mem_writes) <> None).
+
+    (* let write_instantiated inst =  *)
+    (*   write_initiated inst &&  *)
+    (*   List.null inst.subwrites.sw_potential_write_addresses *)
+    (* let write_committed inst = inst.subwrites.sw_committed *)
+
+    (* let all_read_writes_have_their_values inst =  *)
+    (*   forall ((_, wss) MEM inst.subreads.sr_writes_read_from) ((w,_) MEM wss). *)
+    (*   w.w_value <> Nothing *)
+
+    (* let propagated_writes_of_inst inst =  *)
+    (*   inst.subwrites.sw_propagated_writes *)
+
+    (* let unpropagated_writes_of_inst inst =  *)
+    (*   inst.subwrites.sw_potential_write_addresses *)
+    (*   ++ inst.subwrites.sw_potential_writes *)
+
+    (* let all_writes_of_inst inst =  *)
+    (*   propagated_writes_of_inst inst ++  *)
+    (*     unpropagated_writes_of_inst inst *)
 
     Definition read_initiated : bool := isTrue (ins.(ins_mem_reads) <> None).
 
@@ -596,20 +667,19 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
     (*    the instruction. This guarantees that the instruction's memory read is *)
     (*    recorded in the instruction_instance state. *)
     Definition all_reads_are_calculated : bool :=
-      is_load ins.(ins_ast)
-                    ---> read_initiated.
+      is_load ins.(ins_ast) ---> read_initiated.
 
-    (* let all_writes_are_calculated inst : bool = *)
-    (*   is_viable_memory_store_ii inst --> write_initiated inst *)
+    Definition all_writes_are_calculated : bool :=
+      is_viable_store ---> write_initiated.
 
-    (* (* return true iff the sail code has already generated all the memory-read/write *)
-     (*    events (except AArch64 write-mem-value, i.e., E_write_memv) for the *)
-     (*    instruction. This guarantees that any memory read/write footprint of the *)
-     (*    instruction is recorded in the instruction_instance state. *) *)
-    (* let all_writes_reads_are_calculated inst : bool = *)
-    (*   (* for efficiency, first check if 'inst' is unfinished *) *)
-    (*   inst.finished || *)
-    (*   (all_reads_are_calculated inst && all_writes_are_calculated inst) *)
+    (* return true iff the sail code has already generated all the memory-read/write *)
+    (*    events (except AArch64 write-mem-value, i.e., E_write_memv) for the *)
+    (*    instruction. This guarantees that any memory read/write footprint of the *)
+    (*    instruction is recorded in the instruction_instance state. *)
+    Definition all_writes_reads_are_calculated : bool :=
+      (* for efficiency, first check if 'inst' is unfinished *)
+      ins.(ins_finished)
+      || (all_reads_are_calculated && all_writes_are_calculated).
 
     Definition is_entirely_satisfied_load : bool :=
       all_reads_are_calculated
@@ -617,9 +687,158 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
 
     Definition finished_load_part : bool :=
       ins.(ins_finished). (* || ins.rmw_finished_load_snapshot <> Nothing *)
-  End PossibleReadsWrites.
+    End InstructionKindState.
 
-  Open Scope bool_scope.
+
+  Section InstructionPrefixPreds.
+    Fixpoint undetermined_reg_data_flow_sources_helper
+             (pref : list decoded_instruction_state)
+             (iid : instruction_id)
+             (ind : nat)
+      : list instruction_id :=
+      match pref with
+      | [] => []  (* if [iid] is not in [pref] then it is an old
+                    instruction, and therefore must be finised. *)
+      | ins::pref =>
+        if decide (ins.(ins_id) = iid) then
+          if ins.(ins_finished) then [] else
+            (* NOTE: we assume rmw instructions write to registers only in the load part *)
+            (* if i.rmw_finished_load_snapshot <> Nothing then {} else *)
+            match List.nth_error ins.(ins_reg_writes) ind with
+            | Some rws =>
+              let res :=
+                  List.concat
+                    (List.map (fun '(iid, ind) => undetermined_reg_data_flow_sources_helper pref iid ind)
+                              rws.(rws_reg_data_flow)) in
+              if rws.(rws_mem_data_flow) then iid::res
+              else res
+            | None => [iid] (* the register write disappeared, i.e. [iid] was
+                              restarted, yet the register dependent instruction
+                              that initiated this check was not restarted. That
+                              can happen when the register write is
+                              deterministic (e.g. the status register of AArch64
+                              STXR). This means we can return [nil] here, but it
+                              feels unsafe. Since this scenario involves
+                              restarts it does not really matter, so I do the
+                              safer thing which is to return [[iid]]. *)
+            end
+        else
+          undetermined_reg_data_flow_sources_helper pref iid ind
+      end.
+
+    (* FIXME: the result has duplicates; use set instead of list? *)
+    (* LEM: machineDefThreadSubsystemUtils.lem: undetermined_reg_writes_read_from *)
+    Definition undetermined_reg_data_flow_sources
+               (pref : list decoded_instruction_state)
+               (rrss : list reg_read_state)
+      : list instruction_id :=
+      List.concat
+        (List.map (fun rrs =>
+                     List.concat
+                       (List.map (fun '(iid, ind, _) =>
+                                    undetermined_reg_data_flow_sources_helper pref iid ind)
+                                 rrs.(rrs_reads_from)))
+                  rrss).
+
+
+    (* check if the instructions feeding register reads are finished. *)
+    (* If an instruction is not finished, recursively check the register write's *)
+    (* dependencies *)
+    Definition fully_determined_reg_reads
+               (pref : list decoded_instruction_state)
+               (rrss : list reg_read_state)
+      : bool:=
+      match undetermined_reg_data_flow_sources pref rrss with
+      | [] => true
+      | _::_ => false
+      end.
+
+
+    (* [true] iff the value read from registers that feed directly into a memory *)
+    (* access address of [ins] cannot change, and the pseudocode has made *)
+    (* enough steps to make the address visible *)
+    Definition fully_determined_address
+               (pref : list decoded_instruction_state)
+               (ins : decoded_instruction_state)
+      (* po: head is new. ASSUME: super set of the po-prefix of [ins] *)
+      : bool :=
+      (* for efficiency, first check if [ins] is finished or not a memory access *)
+      ins.(ins_finished) || negb (is_viable_memory_access ins)
+
+      (* the value read from registers that feed directly into a memory *)
+      (* access address of [ins] cannot change *)
+      || (fully_determined_reg_reads pref (List.filter rrs_feeding_addr ins.(ins_reg_reads)) &&
+
+         (* the pseudocode has made enough steps to make the address visible *)
+         (is_viable_store ins ---> write_initiated ins) &&
+         (is_load ins.(ins_ast) ---> read_initiated ins)).
+
+
+    Definition preceding_memory_accesses_have_fully_determined_address
+               (pref : list decoded_instruction_state)
+      : bool :=
+      list_forall_suffixb (fun pref => match pref with
+                                    | [] => true
+                                    | ins::pref => fully_determined_address pref ins
+                                    end)
+                          pref.
+
+    Definition preceding_reads_writes_are_calculated
+               (pref : list decoded_instruction_state)
+      : bool :=
+      forallb all_writes_reads_are_calculated pref.
+
+    Definition dataflow_committed
+               (pref : list decoded_instruction_state)
+               (ins : decoded_instruction_state)
+      : bool :=
+      fully_determined_reg_reads pref ins.(ins_reg_reads).
+
+
+    Definition controlflow_committed
+               (pref : list decoded_instruction_state)
+      : bool :=
+      (forallb (fun prev_ins =>
+                  is_cond_branch prev_ins ---> prev_ins.(ins_finished))
+               pref) &&
+      (forallb (fun prev_ins =>
+                  is_indirect_branch prev_ins ---> prev_ins.(ins_finished))
+               pref).
+  End InstructionPrefixPreds.
+
+  Section Exclusives.
+    Definition paired_load_atomic
+               (* [full_pref] should include both the active instructions and
+                  the old ones. *)
+               (full_pref : list decoded_instruction_state)
+               (ins : decoded_instruction_state)
+    : option decoded_instruction_state :=
+      if is_rmw ins.(ins_ast) then Some ins
+      else
+        let is_atomic ins := (is_load_atomic ins.(ins_ast) || is_store_atomic ins.(ins_ast))
+                             && negb (is_rmw ins.(ins_ast)) in
+        match List.find is_atomic full_pref with
+        | Some atomic_ins =>
+          if is_load_atomic atomic_ins.(ins_ast) then Some atomic_ins
+          else None
+        | None => None
+        end.
+
+    (* Fixpoint paired_atomic_stores_helper *)
+    (*          (T its: instruction_tree 'i) *)
+    (*   : list (instruction_instance 'i) := *)
+    (*   its >>= fun (i, it) -> *)
+    (*             if is_atomic_load (ik i) && not (is_memory_rmw (ik i)) then [] *)
+    (*             else if is_atomic_store (ik i) && not (is_memory_rmw (ik i)) then [i] *)
+    (*                  else paired_atomic_stores_helper it. *)
+
+    (* Fixpoint paired_atomic_stores (i: instruction_instance 'i) (it: instruction_tree 'i) *)
+    (*     : list (instruction_instance 'i) := *)
+    (*   if is_memory_rmw (ik i) then [i] *)
+    (*   else paired_atomic_stores_helper it *)
+
+  End Exclusives.
+
   (* LEM: machineDefThreadSubsystem.lem: pop_memory_read_request_cand *)
   Definition mem_read_request_cand (pref : list decoded_instruction_state)
              (ins : decoded_instruction_state) : bool :=
@@ -643,9 +862,9 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
                ---> prev_ins.(ins_finished))
             pref) &&
 
-    (* load-acquire/store-release (RCsc):
-           A store-release and a po-succeeding load-acquire are observed in
-           program order *)
+    (* load-acquire/store-release:
+       A store-release and a po-succeeding load-acquire are observed in
+       program order *)
     (is_load_acquire ins.(ins_ast)
      ---> forallb (fun prev_ins =>
                  is_store_release prev_ins.(ins_ast)
@@ -660,6 +879,82 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
                ---> (finished_load_part prev_ins ||
                   is_entirely_satisfied_load prev_ins))
             pref).
+  (* LEM: machineDefThreadSubsystem.lem: pop_commit_store_cand *)
+  Definition commit_store_cand
+             (st : state)
+             (pref : list decoded_instruction_state)
+             (ins : decoded_instruction_state) : bool :=
+    (* all po-preceding memory access locations are fully determined *)
+    preceding_memory_accesses_have_fully_determined_address pref &&
+    (* to simplify the rest of the checks we also require that iprev
+     has made enough steps to guarantee all the read/write requests
+     are recorded in the instruction_instance state. *)
+    preceding_reads_writes_are_calculated pref &&
+
+    dataflow_committed pref ins &&
+    controlflow_committed pref &&
+
+    (forallb (fun prev_ins =>
+                (is_strong_memory_barrier prev_ins.(ins_ast) ||
+                 is_instruction_barrier prev_ins.(ins_ast))
+                  ---> prev_ins.(ins_finished))
+             pref) &&
+
+    (* barrier.st/ld *)
+    (forallb (fun prev_ins =>
+                (is_st_barrier prev_ins.(ins_ast) ---> prev_ins.(ins_finished)) &&
+                (is_ld_barrier prev_ins.(ins_ast) ---> prev_ins.(ins_finished)))
+             pref) &&
+
+    (* load.acquire/store.release: *)
+    (* TODO: the following might be too strong, a previous read only
+       needs to be issued and non-restartable. *)
+    ((is_store_release ins.(ins_ast))
+       ---> (forallb (fun prev_ins =>
+                        (is_viable_memory_access prev_ins)
+                          ---> prev_ins.(ins_finished))
+                     pref)) &&
+
+    (forallb (fun prev_ins =>
+                (is_load_acquire prev_ins.(ins_ast))
+                  ---> finished_load_part prev_ins)
+             pref) &&
+
+  (* load/store-exclusive *)
+  ((is_store_exclusive ins.(ins_ast))
+     --->
+     (* FIXME: [pref] below should be the complete prefix (including old
+        instructions). *)
+     match paired_load_atomic pref ins with
+     (* "can't find the paired load of a successful atomic store" *)
+     (* failed store-exclusive uses a different _cand function *)
+     | None => false
+     | Some load_ins =>
+       finished_load_part load_ins &&
+       match load_ins.(ins_mem_reads) with
+       | None => false
+       | Some reads =>
+         forallb (fun rf =>
+                    forallb (fun '((tid, iid, MemWriteID wid), _) =>
+                               (isTrue (tid = st.(id)))
+                                 --->
+                                 (forallb (fun prev_ins =>
+                                             (isTrue (prev_ins.(ins_id) = iid))
+                                               --->
+                                               match prev_ins.(ins_mem_writes) with
+                                               | None => false
+                                               | Some writes =>
+                                                 match List.nth_error writes.(ws_has_propagated) wid with
+                                                 | None => false
+                                                 | Some b => b
+                                                 end
+                                               end)
+                                          pref))
+                            rf)
+                 reads.(rs_reads_from)
+       end
+     end).
+
 
 End SimpleArmv8A.
 
@@ -675,9 +970,11 @@ Module Make (Arc : ArcSig) (ArcThread : ArcThreadSig with Module Arc := Arc) : T
   Definition is_eager_event {A T} := @is_eager_event A T.
   Definition denote {F} := @denote F.
 
-  Definition initial_state '((InstructionID iid) : instruction_id) (loc : mem_loc)
+  Definition initial_state '(tid : thread_id)
+             '((InstructionID iid) : instruction_id) (loc : mem_loc)
     : state :=
-    {| next_iid := InstructionID (iid + 1);
+    {| id := tid;
+       next_iid := InstructionID (iid + 1);
        instruction_tree := TLeaf (TNode (InstructionID iid, loc) []) |}.
 
   Section RegisterRead.
@@ -698,11 +995,13 @@ Module Make (Arc : ArcSig) (ArcThread : ArcThreadSig with Module Arc := Arc) : T
       : option (list (instruction_id * nat * reg_slc_val)) :=
       match pref with
       | ins::pref =>
-        let wslcs := List.combine (List.seq 0 (List.length ins.(ins_reg_writes)))
-                                  ins.(ins_reg_writes) in
-        let wslcs := List.filter (fun '(i, w) => isTrue (w.(rws_slc_val).(rsv_slc).(rs_reg) = r))
-                                 wslcs in
-        let wslcs := List.map (fun '(i, w) => ((ins.(ins_id), i), w.(rws_slc_val))) wslcs in
+        let wslcs :=
+            (* Using ListMonad to do filter-map *)
+            '(i, w) <- List.combine (List.seq 0 (List.length ins.(ins_reg_writes)))
+                                   ins.(ins_reg_writes)
+            ;; if decide (w.(rws_slc_val).(rsv_slc).(rs_reg) = r) then
+                 ret ((ins.(ins_id), i), w.(rws_slc_val))
+               else nil in
 
         match Utils.reads_from_slcs wslcs rslcs rf with
         | Some (rf, nil) => Some rf
@@ -985,7 +1284,6 @@ Module Make (Arc : ArcSig) (ArcThread : ArcThreadSig with Module Arc := Arc) : T
                                       "try_sat_mem_load_op_from_storage: no mem reads."
       ;; unsat_slcs <- try_unwrap_option (List.nth_error rs.(rs_unsat_slcs) rid)
                                         "try_sat_mem_load_op_from_storage: missing rid."
-      (* ;; guard (isTrue (unsat_slcs <> [])) *)
       ;; rr <- try_unwrap_option (List.nth_error rs.(rs_reads) rid)
                                 "try_sat_mem_load_op_from_storage: missing rid"
       ;; rf_forward <- try_unwrap_option (List.nth_error rs.(rs_reads_from) rid)

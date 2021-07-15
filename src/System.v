@@ -133,8 +133,8 @@ Module Make (Arc : ArcSig)
     {| storage := Storage.initial_state mem;
        threads := List.map
                     (* The first iid is 1; we use iid 0 for reg-writes with initial values *)
-                    (Thread.initial_state (InstructionID 1))
-                    entry_locs |}.
+                    (fun '(tid, loc) => Thread.initial_state (ThreadID tid) (InstructionID 1) loc)
+                    (List.combine (List.seq 0 (List.length entry_locs)) entry_locs) |}.
 
   Definition handle_thread_E
              (* {E} *)
