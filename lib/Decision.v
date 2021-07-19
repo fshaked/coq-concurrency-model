@@ -234,6 +234,21 @@ Proof.
       tauto.
 Defined.
 
+Instance decide_Exists {A} (P: A -> Prop):
+  (forall a, Decision (P a)) ->
+  (forall l, Decision (Exists P l)).
+Proof.
+  intros HP l.
+  induction l.
+  * right.
+    inversion 1.
+  * destruct (decide (Exists P l)) as [Hl | Hl].
+    + left. apply Exists_cons_tl. auto.
+    + destruct (decide (P a)) as [Ha | Ha].
+      - left. constructor. auto.
+      - right. inversion 1; auto.
+Defined.
+
 Instance list_decide_eq_nil {A} : forall (xs : list A), Decision (xs = nil).
 Proof.
   intros. unfold Decision.

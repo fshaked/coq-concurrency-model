@@ -320,11 +320,20 @@ Section Slices.
                               size : T -> nat;
                               sub_slice : T -> nat -> nat -> option T }.
 
+  (* [is_sub_slice m n] is [true] iff [m] is contained in [n]. *)
+  Definition contained {S S'} `{Slice S} `{Slice S'}
+             (m : S) (n : S') : bool :=
+    isTrue ((start n <= start m) /\ (start m + size m <= start n + size n))%nat.
+
+  Definition non_empty_intersection {S S'} `{Slice S} `{Slice S'}
+             (m : S) (n : S') : bool :=
+    isTrue (start m < start n + size n /\
+            start n < start m + size m)%nat.
+
   Definition reads_from_slcs_helper_helper {S S'} `{Slice S} `{Slice S'}
              (slc : S) (uslc : S')
     : option (option (S * list S')) :=
-    if decide (start slc < start uslc + size uslc /\
-               start uslc < start slc + size slc)%nat then
+    if non_empty_intersection slc uslc then
       let slc'_start := max (start slc) (start uslc) in
       let slc'_end := min ((start slc) + (size slc)) ((start uslc) + (size uslc)) in
       match sub_slice slc slc'_start (slc'_end - slc'_start) with

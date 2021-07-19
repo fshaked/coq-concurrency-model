@@ -1,8 +1,10 @@
 From Coq Require Import
      Arith.PeanoNat
-     NArith.NArith
      Lists.List
-     Strings.String.
+     MSets.MSetAVL
+     NArith.NArith
+     Strings.String
+     Structures.OrdersEx.
 
 Import ListNotations.
 
@@ -37,6 +39,8 @@ Import Word.Notations.
 
 Require Import Types Utils.
 Require Import  Decision.
+
+Module NatSet := MSetAVL.Make Nat_as_OT.
 
 Module Base (Arc : ArcSig).
   Export Arc.
@@ -429,8 +433,13 @@ Module Base (Arc : ArcSig).
          ins_mem_writes := None;
          ins_finished := false |}.
 
-    Definition ins_tree := (tree decoded_instruction_state
-                               (tree (instruction_id * mem_loc) unit))%type.
+    Definition ins_tree : Type := tree decoded_instruction_state
+                                       (tree (instruction_id * mem_loc) unit).
+    (* the additional [bool] in [restart_ins_tree] indicates which instructions
+       should be restarted *)
+    Definition restart_ins_tree : Type := tree (bool * decoded_instruction_state)
+                                               (tree (instruction_id * mem_loc) unit).
+
     Record _state :=
       mk_state { id : thread_id;
                  next_iid : instruction_id;
@@ -493,11 +502,23 @@ Module Type ArcThreadSig.
   Module Base := Base Arc.
   Export Base.
 
-  Parameter  mem_read_request_cand : list decoded_instruction_state ->
-                                     decoded_instruction_state -> bool.
-End ArcThreadSig.
+  Parameter sat_mem_read_restarts : state -> (mem_reads_from + (list mem_slc))
+                                    -> list ins_tree
+                                    -> list restart_ins_tree.
 
-(******************************************************************************)
+  Parameter propagate_write_restarts : state -> decoded_instruction_state -> mem_write
+                                       -> list ins_tree
+                                       -> list restart_ins_tree.
+
+  Parameter  mem_read_request_cand : list decoded_instruction_state
+                                     -> decoded_instruction_state -> bool.
+
+  Parameter commit_store_cand : state -> list decoded_instruction_state
+                                -> decoded_instruction_state -> bool.
+
+  Parameter propagate_write_cand : state -> list decoded_instruction_state
+                                   -> decoded_instruction_state -> mem_write -> bool.
+End ArcThreadSig.
 
 Require SimpleA64InsSem.
 
@@ -579,16 +600,13 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
     (*   forall ((_, wss) MEM inst.subreads.sr_writes_read_from) ((w,_) MEM wss). *)
     (*   w.w_value <> Nothing *)
 
-    (* let propagated_writes_of_inst inst =  *)
-    (*   inst.subwrites.sw_propagated_writes *)
+    Definition propagated_writes writes :=
+      List.map snd (List.filter fst (List.combine writes.(ws_has_propagated)
+                                                           writes.(ws_writes))).
 
-    (* let unpropagated_writes_of_inst inst =  *)
-    (*   inst.subwrites.sw_potential_write_addresses *)
-    (*   ++ inst.subwrites.sw_potential_writes *)
-
-    (* let all_writes_of_inst inst =  *)
-    (*   propagated_writes_of_inst inst ++  *)
-    (*     unpropagated_writes_of_inst inst *)
+    Definition unpropagated_writes writes :=
+      List.map snd (List.filter fst (List.combine (List.map negb writes.(ws_has_propagated))
+                                                  writes.(ws_writes))).
 
     Definition read_initiated : bool := isTrue (ins.(ins_mem_reads) <> None).
 
@@ -842,9 +860,8 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
   (* LEM: machineDefThreadSubsystem.lem: pop_memory_read_request_cand *)
   Definition mem_read_request_cand (pref : list decoded_instruction_state)
              (ins : decoded_instruction_state) : bool :=
-    (* NOTE: we don't check that po-preceding instructions to the same
-                 address are finished.
-                 See also private comment THREAD1 *)
+    (* NOTE: we don't check that po-preceding instructions to the same address
+       are finished. See also private comment THREAD1 *)
     (forallb (fun prev_ins =>
                is_strong_memory_barrier prev_ins.(ins_ast)
                ---> prev_ins.(ins_finished))
@@ -862,23 +879,23 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
                ---> prev_ins.(ins_finished))
             pref) &&
 
-    (* load-acquire/store-release:
-       A store-release and a po-succeeding load-acquire are observed in
-       program order *)
+    (* load-acquire/store-release: A store-release and a po-succeeding
+       load-acquire are observed in program order *)
     (is_load_acquire ins.(ins_ast)
      ---> forallb (fun prev_ins =>
                  is_store_release prev_ins.(ins_ast)
                  ---> prev_ins.(ins_finished))
               pref) &&
 
-    (* All po-preceding load-acquires must issue their requests before the
-         read request.
-         Also see private note THREAD3 *)
+    (* All po-preceding load-acquires must issue their requests before the read
+         request. Also see private note THREAD3 *)
     (forallb (fun prev_ins =>
                is_load_acquire prev_ins.(ins_ast)
                ---> (finished_load_part prev_ins ||
                   is_entirely_satisfied_load prev_ins))
-            pref).
+             pref).
+
+
   (* LEM: machineDefThreadSubsystem.lem: pop_commit_store_cand *)
   Definition commit_store_cand
              (st : state)
@@ -886,9 +903,9 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
              (ins : decoded_instruction_state) : bool :=
     (* all po-preceding memory access locations are fully determined *)
     preceding_memory_accesses_have_fully_determined_address pref &&
-    (* to simplify the rest of the checks we also require that iprev
-     has made enough steps to guarantee all the read/write requests
-     are recorded in the instruction_instance state. *)
+    (* to simplify the rest of the checks we also require that iprev has made
+       enough steps to guarantee all the read/write requests are recorded in the
+       instruction_instance state. *)
     preceding_reads_writes_are_calculated pref &&
 
     dataflow_committed pref ins &&
@@ -956,6 +973,326 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
      end).
 
 
+
+
+  Definition all_po_preceding_overlapping_reads_issued_and_non_restartable
+             (pref : list decoded_instruction_state)
+             (write : mem_write)
+             (might_be_restarted : list instruction_id)
+    : bool :=
+    forallb (fun prev_ins =>
+               match prev_ins.(ins_mem_reads) with
+               | None => true
+               | Some reads =>
+                 forallb (fun '(r, uslc) =>
+                            ((non_empty_intersection write.(write_footprint) r.(read_footprint))
+                               ---> (isTrue (uslc = []))
+                             (* and [prev_ins] can't be restarted *)
+                             && isTrue (~ In prev_ins.(ins_id) might_be_restarted)))
+                         (List.combine reads.(rs_reads) reads.(rs_unsat_slcs))
+               end)
+            pref.
+
+  Definition all_po_preceding_overlapping_unpropagated_writes_covered
+             (prev_unpropagated_writes : list mem_write) (write : mem_write)
+    : bool :=
+    forallb (fun prev_write =>
+               (non_empty_intersection write.(write_footprint) prev_write.(write_footprint))
+                 ---> contained prev_write.(write_footprint) write.(write_footprint))
+            prev_unpropagated_writes.
+
+  Definition no_po_preceding_overlapping_unpropagated_writes
+             (prev_unpropagated_writes : list mem_write) (write : mem_write)
+    : bool :=
+    forallb (fun prev_write =>
+               negb (non_empty_intersection write.(write_footprint)
+                                                    prev_write.(write_footprint)))
+        prev_unpropagated_writes.
+
+  Definition write_allowed_to_be_subsumed (ins : decoded_instruction_state)
+    : bool :=
+    (* FIXME:
+       params.thread_allow_write_subsumption && *)
+    false &&
+    negb (is_store_release ins.(ins_ast)) &&
+    negb (is_store_atomic ins.(ins_ast)).
+
+  Section Restart.
+    (* LEM: machineDefThreadSubsystem.lem: dependent_suffix_to_restart [true]
+       iff [ins] should be restarted, given that the preceding instructions in
+       [pref] that are tagged with [true] have been restarted. *)
+    Definition restart_successor
+               (s : state)
+               (pref : list (bool * decoded_instruction_state))
+               (ins : decoded_instruction_state)
+    : bool :=
+      let restarted_iids := List.map (fun '(_, i) => i.(ins_id)) (List.filter fst pref) in
+      (* register data flow source restarted *)
+      existsb (fun iid => isTrue (In iid restarted_iids))
+              (undetermined_reg_data_flow_sources (List.map snd pref)
+                                                  ins.(ins_reg_reads))
+      (* mem read satisifed by a restarted write forward *)
+      || match ins.(ins_mem_reads) with
+        | None => false
+        | Some reads =>
+          existsb (fun '((tid, iid, _), _) =>
+                     isTrue (tid = s.(id) /\ In iid restarted_iids))
+                  (List.concat reads.(rs_reads_from))
+        end
+      (* load succeeding a restarted load-acquire *)
+      || (is_load ins.(ins_ast)
+         && existsb (fun '(restarted, prev_ins) =>
+                       is_load_acquire prev_ins.(ins_ast)
+                       && restarted
+                       && negb (finished_load_part prev_ins))
+                    pref).
+
+
+    (* see if there is a pair of distinct writes in [rf] and [rf'] whose slices
+       footprint-intersect and where the second does not come from an
+       instruction in [prev_iids] *)
+    Definition reads_from_nonforwarding_different_overlapping_write
+               (s : state)
+               (rf: mem_reads_from)
+               (rf': mem_reads_from)
+               (prev_iids: list instruction_id)
+    : bool :=
+      existsb (fun '((tid', iid', wid') as id', (slc', _)) =>
+                 (* non-forwarding *)
+                 isTrue (tid' <> s.(id) \/ ~ In iid' prev_iids)
+                 && existsb (fun '(id, (slc, _)) =>
+                               (* different *)
+                               isTrue (id <> id')
+                               (* overlapping *)
+                               && non_empty_intersection slc slc')
+                            rf)
+              rf'.
+
+    Definition sat_mem_read_restarts
+               (s : state)
+               (ss : mem_reads_from
+                     + (list mem_slc))
+               (subts : list ins_tree)
+      :  list restart_ins_tree :=
+      List.map
+        (tree_map_in_context
+           (fun pref suc_ins _ =>
+              let restart_root :=
+                  match suc_ins.(ins_mem_reads) with
+                  | None => false
+                  | Some reads =>
+                    match ss with
+                    | inl rf =>
+                      let pref_iids := List.map (fun '(_, i) => i.(ins_id)) pref in
+                      existsb (fun rf' =>
+                                 reads_from_nonforwarding_different_overlapping_write
+                                   s rf rf' pref_iids)
+                              reads.(rs_reads_from)
+                    | inr rs =>
+                      existsb (fun r' => existsb (non_empty_intersection r'.(read_footprint)) rs)
+                              reads.(rs_reads)
+                    end
+                  end in
+              (restart_root || restart_successor s pref suc_ins, suc_ins))
+           (fun _ l => l) [])
+        subts.
+
+    Definition propagate_write_restarts
+               (s : state)
+               (ins : decoded_instruction_state)
+               (write : mem_write)
+               (subts : list ins_tree)
+      :  list restart_ins_tree :=
+      let wslcs := [((s.(id), ins.(ins_id), write.(write_id)),
+                     (write.(write_footprint), write.(write_val)))] in
+      List.map
+        (tree_map_in_context
+           (fun pref suc_ins _ =>
+              let restart_root :=
+                  match suc_ins.(ins_mem_reads) with
+                  | None => false
+                  | Some reads =>
+                    let pref_iids := List.map (fun '(_, i) => i.(ins_id)) pref in
+                    (* Restart loads that have been satisfied by writes that are
+                    co-before [write] *)
+                    reads_from_nonforwarding_different_overlapping_write
+                      s wslcs (List.concat reads.(rs_reads_from)) pref_iids
+                    (* Restart loads that have a read that was partially satisfied
+                    by forwarding [write], and is not yet fully satisfied. This
+                    prevents single-copy atomicity violations such as
+                    CO-MIXED-20cc.
+                    The Lem model doesn't do this restart, instead it prevents
+                    [write] from being propagated. *)
+                    || existsb (fun '(uslcs, rf) =>
+                                 isTrue (uslcs <> [])
+                                 && existsb (fun '((tid, iid, wid), _) =>
+                                               isTrue (tid = s.(id) /\ iid = ins.(ins_id)
+                                                       /\ wid = write.(write_id)))
+                                            rf)
+                              (List.combine reads.(rs_unsat_slcs) reads.(rs_reads_from))
+                  end in
+              (restart_root || restart_successor s pref suc_ins, suc_ins))
+           (fun _ l => l) [])
+        subts.
+
+    Definition commit_store_exc_fail_restarts
+               (s : state)
+               (ins : decoded_instruction_state)
+               (subts : list ins_tree)
+      :  list restart_ins_tree :=
+      List.map
+        (tree_map_in_context
+           (fun pref suc_ins _ => (restart_successor s pref suc_ins, suc_ins))
+           (fun _ l => l) [(true, ins)])
+        subts.
+
+    Definition store_action_might_restart
+               (s : state)
+               (ins : decoded_instruction_state)
+               (subt : ins_tree)
+               (might_restart : NatSet.t)
+      : NatSet.t :=
+      if negb (is_viable_store ins) || ins.(ins_finished) then might_restart
+      else match ins.(ins_mem_writes) with
+           | None => might_restart
+           | Some writes =>
+             let write_restarts (success : bool) :=
+                 if success then
+                   List.fold_left
+                     (fun might_restart write =>
+                        List.fold_left (fun might_restart subt =>
+                                          List.fold_left
+                                            (fun might_restart n =>
+                                               match n with
+                                               | inl (true, i) =>
+                                                 let '(InstructionID iid) := i.(ins_id) in
+                                                 NatSet.add iid might_restart
+                                               | _ => might_restart
+                                               end)
+                                            (tree_to_list_preorder subt)
+                                            might_restart)
+                                       (propagate_write_restarts s ins write [subt])
+                                       might_restart)
+                     (unpropagated_writes writes)
+                     might_restart
+                 else
+                   List.fold_left (fun might_restart subt =>
+                                     List.fold_left
+                                       (fun might_restart n =>
+                                          match n with
+                                          | inl (true, i) =>
+                                            let '(InstructionID iid) := i.(ins_id) in
+                                            NatSet.add iid might_restart
+                                          | _ => might_restart
+                                          end)
+                                       (tree_to_list_preorder subt)
+                                       might_restart)
+                                  (commit_store_exc_fail_restarts s ins [subt])
+                                  might_restart in
+             if is_store_atomic ins.(ins_ast) then
+               (* FIXME:
+               match instruction.successful_atomic_store with
+               (* [None] means success undetermined, [Some true] means determined to succeed*)
+               | None -> NatSet.union (write_restarts true)
+                                     (write_restarts false)
+               | Some b -> write_restarts b
+               end *)
+               write_restarts true
+             else
+               write_restarts true
+           end.
+
+    Definition load_action_might_restart
+               (s : state)
+               (ins : decoded_instruction_state)
+               (subt : ins_tree)
+               (might_restart : NatSet.t)
+      : NatSet.t :=
+      if ins.(ins_finished) then might_restart
+      else match ins.(ins_mem_reads) with
+           | None => might_restart
+           | Some reads =>
+             let '(InstructionID iid) := ins.(ins_id) in
+             let rslcss :=
+                 if NatSet.mem iid might_restart then
+                   (* because the load migh be restarted, we have to assume it will
+                      be, and then resatisfied, hence the complete slice below. *)
+                   [[reads.(rs_footprint)]]
+                 else
+                   reads.(rs_unsat_slcs) in
+             (* The folds below can be replaced with maps and unions. *)
+             List.fold_left
+               (fun might_restart slcs =>
+                  List.fold_left (fun might_restart subt =>
+                                    List.fold_left
+                                      (fun might_restart n =>
+                                         match n with
+                                         | inl (true, i) =>
+                                           let '(InstructionID iid) := i.(ins_id) in
+                                           NatSet.add iid might_restart
+                                         | _ => might_restart
+                                         end)
+                                      (tree_to_list_preorder subt)
+                                      might_restart)
+                                 (sat_mem_read_restarts s (inr slcs) [subt])
+                                 might_restart)
+               rslcss might_restart
+           end.
+
+    (* Return the set of instructions in [pref] that might be restarted in the
+       future.
+       ASSUME: all memory access instructions in [pref] have calculated their
+       memory address and all the instructions feeding these calculations are
+       propagated (i.e. addresses are known and cannot change). *)
+    Definition might_be_restarted
+               (s :  state)
+               (pref: list decoded_instruction_state)
+      : list instruction_id :=
+      let '(_, pref_trees) := List.fold_left (fun '(t, ts) i => (TNode i [t], (i, t)::ts))
+                                             pref ((TLeaf (TLeaf tt)), []) in
+      let might_restart :=
+          List.fold_left
+            (fun might_restart '(ins, subt) =>
+               NatSet.union
+                 (store_action_might_restart s ins subt might_restart)
+                 (load_action_might_restart s ins subt might_restart))
+            pref_trees
+            NatSet.empty in
+      List.map InstructionID (NatSet.elements might_restart).
+
+  (* LEM: machineDefThreadSubsystem.lem: propagate_write_cand
+     (which calls pop_write_co_check) *)
+  Definition propagate_write_cand
+             (s : state)
+             (pref : list decoded_instruction_state)
+             (ins : decoded_instruction_state)
+             (write : mem_write)
+    : bool :=
+    let might_be_restarted := might_be_restarted s pref in
+
+    (* Guarantee RW-coherence *)
+    all_po_preceding_overlapping_reads_issued_and_non_restartable
+      pref write might_be_restarted
+
+    (* Guarantee WW-coherence *)
+    && forallb (fun prev_ins =>
+                  if atomic_store_determined_to_fail prev_ins then
+                    true
+                  else
+                    match prev_ins.(ins_mem_writes) with
+                    | None => true
+                    | Some prev_writes =>
+                      let prev_unpropagated_writes := unpropagated_writes prev_writes in
+                      (* FIXME: (if we want to support write-subsumption)
+                         if pop_write_allowed_to_be_subsumed params iprev then
+                           pop_all_po_preceding_overlapping_unpropagated_writes_covered
+                             prev_unpropagated_writes write
+                         else *)
+                      no_po_preceding_overlapping_unpropagated_writes
+                        prev_unpropagated_writes write
+                    end)
+               pref.
+  End Restart.
 End SimpleArmv8A.
 
 (******************************************************************************)
@@ -1035,11 +1372,8 @@ Module Make (Arc : ArcSig) (ArcThread : ArcThreadSig with Module Arc := Arc) : T
                                   slc.(rs_first_bit)))%word in
                wor w w'
              else
-               (* FIXME: this shouldn't be reachable *)
-               w
-           | None =>
-             (* FIXME: this shouldn't be reachable *)
-             w
+               w (* FIXME: this shouldn't be reachable *)
+           | None => w (* FIXME: this shouldn't be reachable *)
            end)
         rf (wzero slc.(rs_size)).
     Obligation 1.
@@ -1265,15 +1599,27 @@ Module Make (Arc : ArcSig) (ArcThread : ArcThreadSig with Module Arc := Arc) : T
       guard false
       ;; ret (false, []).
 
-    Definition restart_instructions (iids : list instruction_id)
-               (ts : list ins_tree)
-      : list ins_tree :=
-      List.map (tree_map
-                  (fun ins => if decide (In ins.(ins_id) iids) then
-                             (initial_decoded_instruction_state iid ins.(ins_loc) ins.(ins_ast))
-                           else ins)
-                  (fun l => l))
-               ts.
+    Definition apply_restarts (subts : list restart_ins_tree)
+      : (list instruction_id * list ins_tree) :=
+      let '(restarted_iids, subts) :=
+          List.split
+            (List.map
+               (fun subt =>
+                  let restarted_iids :=
+                      n <- tree_to_list_preorder subt
+                      ;; match n with
+                         | inl (true, i) => [i.(ins_id)]
+                         | _ => []
+                         end in
+                  let subt :=
+                      tree_map (fun '((restart, i) : bool * _) =>
+                                  if restart then
+                                    initial_decoded_instruction_state i.(ins_id) i.(ins_loc) i.(ins_ast)
+                                  else i)
+                               (fun l => l) subt in
+                  (restarted_iids, subt))
+               subts) in
+      (List.concat restarted_iids, subts).
 
     Definition try_sat_mem_load_op_from_storage '((MemReadID rid) : mem_read_id)
       : itree F (list instruction_id) :=
@@ -1289,35 +1635,21 @@ Module Make (Arc : ArcSig) (ArcThread : ArcThreadSig with Module Arc := Arc) : T
       ;; rf_forward <- try_unwrap_option (List.nth_error rs.(rs_reads_from) rid)
                                         "try_sat_mem_load_op_from_storage: missing rid."
       ;; rf_storage <- trigger (StERead rr unsat_slcs)
-      ;; let rs := rs <| rs_unsat_slcs := list_replace_nth rid [] rs.(rs_unsat_slcs) |>
-                                                                                     <| rs_reads_from := list_replace_nth rid (rf_forward ++ rf_storage)
+      ;; let rs := (rs <| rs_unsat_slcs := list_replace_nth rid [] rs.(rs_unsat_slcs) |>)
+                     <| rs_reads_from := list_replace_nth rid (rf_forward ++ rf_storage)
                                                                                                                           rs.(rs_reads_from) |> in
          let ins := ins <| ins_mem_reads := Some rs |> in
-         (* FIXME: compute iids that need to be restarted *)
-         let restarts :=
-             (List.fold_left (fun iids t =>
-                                List.fold_left (fun iids i =>
-                                                  match i with
-                                                  | inl ins =>
-                                                    if ins.(ins_finished) then iids
-                                                    else ins.(ins_id) :: iids
-                                                  | inr _ => iids
-                                                  end)
-                                               (tree_to_list_preorder t)
-                                               iids)
-                             subts
-                             []) in
-         let subts := restart_instructions restarts subts in
+         let '(restarted_iids, subts) :=
+             apply_restarts (sat_mem_read_restarts s (inl rf_storage) subts) in
          let s := update_dec_instruction_state_and_subts iid ins subts s in
          'tt <- put s
-         ;; ret restarts.
+      ;; ret restarted_iids.
 
     Definition try_complete_load_ops : itree F mem_slc_val :=
       s <- get
       ;; '(_, ins, _) <- try_get_dec_instruction_state iid s
       ;; rs <- try_unwrap_option ins.(ins_mem_reads)
                                       "try_complete_load_ops: no mem reads."
-      (* ;; guard (isTrue (Forall (fun u => u = []) rs.(rs_unsat_slcs))) *)
       ;; val <- try_unwrap_option
                  (mem_slc_val_of_reads_from
                     rs.(rs_footprint)
@@ -1349,52 +1681,38 @@ Module Make (Arc : ArcSig) (ArcThread : ArcThreadSig with Module Arc := Arc) : T
                                                     write_val := val;
                                                     write_kind := kind |})
                          (List.combine wids sub_slcs) in
-         let ws := ws <| ws_writes := writes |>
-                                             <| ws_has_propagated := List.map (fun _ => false) writes |>in
+         let ws := (ws <| ws_writes := writes |>)
+                     <| ws_has_propagated := List.map (fun _ => false) writes |>in
          let ins := ins <| ins_mem_writes := Some ws |> in
          let s := update_dec_instruction_state iid ins s in
          put s.
 
     Definition try_commit_store_instruction : itree F (list mem_write_id) :=
       s <- get
-      ;; '(_, ins, _) <- try_get_dec_instruction_state iid s
+      ;; '(pref, ins, _) <- try_get_dec_instruction_state iid s
+      ;; 'tt <- guard (commit_store_cand s pref ins)
       ;; ws <- try_unwrap_option ins.(ins_mem_writes)
                                       "try_commit_store_instruction: no mem writes"
-      (* FIXME: check commit-store condition *)
       ;; let wids := List.map write_id ws.(ws_writes) in
          ret wids.
 
     Definition try_propagate_store_op '((MemWriteID wid) : mem_write_id)
       : itree F (list instruction_id) :=
       s <- get
-      ;; '(_, ins, subts) <- try_get_dec_instruction_state iid s
+      ;; '(pref, ins, subts) <- try_get_dec_instruction_state iid s
       ;; ws <- try_unwrap_option ins.(ins_mem_writes)
                                       "try_propagate_store_op: no mem writes"
-      (* ;; guard (isTrue (List.nth_error ws.(ws_has_propagated) wid = Some false)) *)
       ;; w <- try_unwrap_option (List.nth_error ws.(ws_writes) wid)
                                "try_propagate_store_op: missing wid"
-      (* FIXME: check mem-write-propagation condition *)
+      ;; 'tt <- guard (propagate_write_cand s pref ins w)
       ;; 'tt <- trigger (StEWrite w)
       ;; let ws := ws <| ws_has_propagated := list_replace_nth wid true ws.(ws_has_propagated) |> in
          let ins := ins <| ins_mem_writes := Some ws |> in
-         (* FIXME: compute iids that need to be restarted *)
-         let restarts :=
-             (List.fold_left (fun iids t =>
-                                List.fold_left (fun iids i =>
-                                                  match i with
-                                                  | inl ins =>
-                                                    if ins.(ins_finished) then iids
-                                                    else ins.(ins_id) :: iids
-                                                  | inr _ => iids
-                                                  end)
-                                               (tree_to_list_preorder t)
-                                               iids)
-                             subts
-                             []) in
-         let subts := restart_instructions restarts subts in
+         let '(restarted_iids, subts) :=
+             apply_restarts (propagate_write_restarts s ins w subts) in
          let s := update_dec_instruction_state_and_subts iid ins subts s in
          'tt <- put s
-         ;; ret restarts.
+      ;; ret restarted_iids.
 
     Definition try_complete_store_ops : itree F unit :=
       (* FIXME: is there anything we need to check here? *)
