@@ -343,20 +343,38 @@ Module ArcCoreFacts (ArcCore : ArcCoreSig).
                   read_footprint : mem_slc;
                   read_kind : mem_read_kind }.
 
-  Record _mem_write : Type :=
+  Instance showable_mem_read : Showable mem_read :=
+    { show :=
+        fun r =>
+          (show r.(read_footprint) ++ "(" ++ show r.(read_kind) ++ ")")%string
+    }.
+
+  Record mem_write : Type :=
     mk_mem_write { write_id : mem_write_id;
                    write_footprint : mem_slc;
                    write_val : mem_slc_val;
                    write_kind : mem_write_kind }.
-  Definition mem_write := _mem_write.
 
   Instance showable_mem_write : Showable mem_write :=
     { show :=
         fun w =>
           (show w.(write_footprint) ++ " = " ++ show (List.rev (List.map Hex w.(write_val))) ++ "(" ++ show w.(write_kind) ++ ")")%string
     }.
+
   Definition mem_reads_from : Type := list ((thread_id * instruction_id * mem_write_id) *
                                             (mem_slc * mem_slc_val)).
+
+  Local Open Scope string_scope.
+  Instance showable_mem_reads_from : Showable mem_reads_from :=
+    { show :=
+        fun rf =>
+          String.concat newline
+                        (List.map (fun '((tid, iid, _), (slc, val)) =>
+                                     (show tid ++ ":" ++ show iid ++ ":")
+                                       ++ show slc ++ " " ++ show (List.rev (List.map Hex val)))
+                                  rf)
+    }.
+  Close Scope string_scope.
 
   Variant _storageE : Type -> Type :=
   | StEReadInstruction : mem_loc -> _storageE (mem_slc * mem_reads_from)

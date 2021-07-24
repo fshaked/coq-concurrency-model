@@ -134,9 +134,9 @@ Module Base (Arc : ArcSig).
                                          (restarts <- trigger (ThESatMemLoadOpStorage rid)
                                           ;; ret (true, restarts))] in
                             read <- nondet reads
-                            ;; read <- try_unwrap_option read
-                                                        "lift_mem_read: nondet out of range"
-                            ;; is_sat <- exclusive_block
+                         ;; read <- try_unwrap_option read
+                                                     "lift_mem_read: nondet out of range"
+                         ;; is_sat <- exclusive_block
                                           ('(is_sat, restarts) <- read
                                            ;; 'tt <- denote_restarts restarts
                                            ;; ret is_sat)
@@ -239,7 +239,7 @@ Module Base (Arc : ArcSig).
           | ThECompleteStoreOps => true
           end
         | inr1 (inl1 _) => true (* chooseE mem_read_id *)
-        | inr1 (inr1 (inl1 _)) => true (* chooseE mem_read_id *)
+        | inr1 (inr1 (inl1 _)) => true (* chooseE mem_write_id *)
         | inr1 (inr1 (inr1 (inl1 _))) => true (* chooseE nat *)
         | inr1 (inr1 (inr1 (inr1 (inl1 _)))) (* exceptE error *)
         | inr1 (inr1 (inr1 (inr1 (inr1 _)))) => true (* debugE *)
@@ -351,10 +351,22 @@ Module Base (Arc : ArcSig).
     #[global] Instance eta_mem_reads_state : Settable _ :=
       settable! mk_mem_reads_state <rs_footprint; rs_reads; rs_unsat_slcs; rs_reads_from>.
 
+    Local Open Scope string_scope.
     Instance showable_mem_reads_state : Showable mem_reads_state :=
       { show :=
-          fun s => ""%string
+          fun s =>
+            String.concat newline
+                          (List.map (fun '(r, uslcs, rf) =>
+                                       ("    " ++ show r)
+                                         ++ (if decide (uslcs = []) then ""
+                                             else " unsat slices: " ++ show uslcs)
+                                         ++ (if decide (rf = []) then ""
+                                             else " rf: " ++ newline ++ show rf))
+                                    (List.combine (List.combine s.(rs_reads)
+                                                                    s.(rs_unsat_slcs))
+                                                  s.(rs_reads_from)))
       }.
+    Close Scope string_scope.
 
     Record mem_writes_state :=
       mk_mem_writes_state { ws_footprint : mem_slc;
@@ -364,10 +376,13 @@ Module Base (Arc : ArcSig).
     #[global] Instance eta_mem_writes_state : Settable _ :=
       settable! mk_mem_writes_state <ws_footprint; ws_writes; ws_has_propagated>.
 
+    Local Open Scope string_scope.
     Instance showable_mem_writes_state : Showable mem_writes_state :=
       { show :=
-          fun s => ""%string
+          fun s => String.concat newline (List.map (fun '(w, p) => "    " ++ show w ++ if (p : bool) then "" else " (not propagated)")
+                                             (List.combine s.(ws_writes) s.(ws_has_propagated)))
       }.
+    Close Scope string_scope.
 
     Record decoded_instruction_state :=
       mk_decoded_instruction_state {
@@ -403,11 +418,15 @@ Module Base (Arc : ArcSig).
                  | _ => "  reg writes: " ++ show i.(ins_reg_writes) ++ newline
                  end
               ++ match i.(ins_mem_reads) with
-                 | Some rs => "  mem reads: " ++ show rs ++ newline
+                 | Some rs =>
+                   ("  mem reads: " ++ newline)
+                     ++ show rs ++ newline
                  | None => ""
                  end
               ++ match i.(ins_mem_writes) with
-                 | Some ws => "  mem writes: " ++ show ws ++ newline
+                 | Some ws =>
+                   ("  mem writes: " ++ newline)
+                     ++ show ws ++ newline
                  | None => ""
                  end
       }.
@@ -486,10 +505,10 @@ Module Base (Arc : ArcSig).
                       end in
                   String.concat "" (List.map show_ins (tree_to_list_preorder t))
                 end in
-            "Instruction tree: " ++ newline ++
-                                 "  " ++ (show_dec_tree s.(instruction_tree)) ++ newline ++
-                                 "Instructions:" ++ newline ++
-                                 String.concat "" (List.map show_ins (tree_to_list_preorder s.(instruction_tree)))
+            ("Instruction tree: " ++ newline)
+              ++ "  " ++ (show_dec_tree s.(instruction_tree)) ++ newline
+              ++ "Instructions:" ++ newline
+              ++ String.concat "" (List.map show_ins (tree_to_list_preorder s.(instruction_tree)))
       }.
     Close Scope string_scope.
   End State.

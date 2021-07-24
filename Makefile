@@ -6,6 +6,12 @@ COQBIGML := $(OPAM_SWITCH_PREFIX)/.opam-switch/sources/coq/plugins/extraction/bi
 all: proof main.native
 .PHONY: all
 
+opam-get-deps:
+	opam pin add coq 8.10.1
+	opam pin add coq-itree 3.0.0
+	opam install coq-bbv coq-record-update
+.PHONY: opam-get-deps
+
 %.vo: %.v coq.mk
 	$(MAKE) -f coq.mk $@
 
@@ -29,6 +35,9 @@ main.native main.byte main.d.byte: proof
 	cp $(COQBIGML) import_coq_ml/
 	ocamlbuild -package num $@
 
+debug-main: main.d.byte
+	ocamldebug $<
+.PHONY: debug-main
 
 clean-extracted:
 	rm -f extracted_ocaml/*

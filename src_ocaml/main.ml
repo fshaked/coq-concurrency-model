@@ -38,61 +38,70 @@ type exec_result =
   | Error
 ;;
 
-let rec exec_test it =
+let prefix d =
+  let a = d mod 150 in
+  Printf.sprintf "%d%s" (d-a) (String.make a '-')
+;;
+
+let rec exec_test d it =
   begin match FlatModel.Model.step it with
   | SNondet its ->
-     let (eager, not_eager) = List.partition (fun (_, eager) -> eager) its in
-     Printf.printf "- Nondet %d (%d eager)\n" (List.length its) (List.length eager);
-     begin match eager_nondet eager with
-     | Reject -> nondet not_eager
-     | x -> x
-     end
+     let (eager, not_eager) = List.partition snd
+                                (* its in *)
+                                (List.rev its) in
+     Printf.printf "%s Nondet %d (%d eager)\n" (prefix d) (List.length its) (List.length eager);
+     if eager = [] then nondet d not_eager else eager_nondet d eager
+     (* begin match eager_nondet d eager with
+      * | Reject -> nondet d not_eager
+      * | x -> x
+      * end *)
   | SNext (Some dbg, it) ->
-     print_chars_endline dbg;
-     exec_test it
+     Printf.printf "%s %s\n" (prefix d) (chars_to_string dbg);
+     exec_test d it
   | SNext (None, it) ->
-     print_string ".";
-     exec_test it
+     (* print_string "."; *)
+     exec_test d it
   | SAccept (s, _) -> Accept s
   | SReject ->
-     print_endline "- Disabled";
+     Printf.printf "%s Disabled\n" (prefix d);
      Reject
   | SError err ->
      Printf.printf "ERROR: %s\n" (chars_to_string err);
      Error
   end
-and eager_nondet its =
+and eager_nondet d its =
   begin match its with
   | (it, _)::its ->
-     begin match exec_test it with
-     | Reject ->
-        print_endline "-- Eager disabled^";
-        eager_nondet its
+     begin match exec_test d it with
+     (* | Reject -> eager_nondet d its *)
      | x -> x
      end
-  | _ -> Reject
+  | _ ->
+     Printf.printf "%s Eager disabled\n" (prefix d);
+     Reject
   end
-and nondet its =
+and nondet d its =
   begin match its with
   | (it, _)::its ->
-     begin match exec_test it with
+     begin match exec_test (d+1) it with
      | Accept res -> Accept res
-     | Reject ->
-        print_endline "-- Nondet disabled";
-        nondet its
+     | Reject -> nondet d its
      | Error -> Error
      end
-  | _ -> Reject
+  | _ ->
+     Printf.printf "%s Nondet disabled\n" (prefix d);
+     Reject
   end
 ;;
 
 let main =
   Arg.parse speclist anon_fun usage_msg;
 
-  (* let test = test_and in *)
-  let test = test_ldr in
+  (* let (test, ts) = (test_and, 1) in *)
+  (* let (test, ts) = (test_ldr, 1) in *)
+  let (test, ts) = (test_MP, 2) in
 
-  begin match exec_test (init_test test) with
+  begin match exec_test 1 (init_test test (Big_int.big_int_of_int ts)) with
   | Accept s -> print_chars_endline (FlatModel.show_state s)
   | _ -> ()
   end
