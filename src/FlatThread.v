@@ -537,6 +537,10 @@ Module Type ArcThreadSig.
 
   Parameter propagate_write_cand : state -> list decoded_instruction_state
                                    -> decoded_instruction_state -> mem_write -> bool.
+
+  Parameter possible_write_forwarding : state -> list decoded_instruction_state
+                                        -> decoded_instruction_state -> list mem_slc
+                                        -> option (mem_reads_from * list mem_slc).
 End ArcThreadSig.
 
 Require SimpleA64InsSem.
@@ -1278,6 +1282,7 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
             pref_trees
             NatSet.empty in
       List.map InstructionID (NatSet.elements might_restart).
+  End Restart.
 
   (* LEM: machineDefThreadSubsystem.lem: propagate_write_cand
      (which calls pop_write_co_check) *)
@@ -1311,7 +1316,65 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
                         prev_unpropagated_writes write
                     end)
                pref.
-  End Restart.
+
+  Local Instance slice_prod_r {T S} `{Slice S} : Slice (T * S) :=
+    { start := fun '(_, s) => Utils.start s;
+      size := fun '(_, s) => Utils.size s;
+      sub_slice := fun '(v, s) start size =>
+                     match sub_slice s start size with
+                     | Some s' => Some (v, s')
+                     | None => None
+                     end }.
+
+  Definition possible_write_forwarding
+             (s : state)
+             (pref : list decoded_instruction_state)
+             (ins : decoded_instruction_state)
+             (unsat_slcs : list mem_slc)
+    : option (mem_reads_from * list mem_slc) :=
+    (* Collect all the write slices that have been observed in [pref]. Some of
+       those writes will be forwarded, some will "block" forwarding. See private
+       comments THREAD4, THREAD5, THREAD6. *)
+    let writes :=
+        List.concat
+          (List.map (fun prev_ins =>
+                       match prev_ins.(ins_mem_writes) with
+                       | Some writes =>
+                         (* FIXME: [writes] might have an empty [ws_writes],
+                            when the address has been instantiated, but the
+                            value has not. I'm not sure if we need to add
+                            [writes.ws_footprint] or not. *)
+                         List.map (fun '(w, p) =>
+                                     let can_be_forwarded :=
+                                         negb p
+                                         && negb (is_load_acquire ins.(ins_ast)
+                                                  && is_store_exclusive prev_ins.(ins_ast)) in
+                                     ((can_be_forwarded, s.(id), prev_ins.(ins_id), w.(write_id)),
+                                      (w.(write_footprint), w.(write_val))))
+                                  (List.combine writes.(ws_writes) writes.(ws_has_propagated))
+                       | None => []
+                       end
+                         ++ match prev_ins.(ins_mem_reads) with
+                            | Some reads =>
+                              List.map (fun '((tid, iid, wid), slc) => ((false, tid, iid, wid), slc))
+                                       (List.concat reads.(rs_reads_from))
+                            | None => []
+                            end)
+                    pref) in
+    match reads_from_slcs writes unsat_slcs [] with
+    | Some (rf, _) =>
+      (* Remove from [rf] writes that are not for forwarding. *)
+      let rf :=
+          List.map (fun '((_, tid, iid, wid), slc) => ((tid, iid, wid), slc))
+                   (List.filter (fun '((can_be_forwarded, _, _, _), _) =>
+                                   can_be_forwarded)
+                                rf) in
+      (* The following call to [reads_from_slcs] returns the same [rf]. We
+         call it to compute the unsat slices. *)
+      reads_from_slcs rf unsat_slcs []
+    | None => None (* unreachable *)
+    end.
+
 End SimpleArmv8A.
 
 (******************************************************************************)
@@ -1494,6 +1557,28 @@ Module Make (Arc : ArcSig) (ArcThread : ArcThreadSig with Module Arc := Arc) : T
         end in
     s <| instruction_tree := helper s.(instruction_tree) |>.
 
+  Definition apply_restarts (subts : list restart_ins_tree)
+    : (list instruction_id * list ins_tree) :=
+    let '(restarted_iids, subts) :=
+        List.split
+          (List.map
+             (fun subt =>
+                let restarted_iids :=
+                    n <- tree_to_list_preorder subt
+                    ;; match n with
+                       | inl (true, i) => [i.(ins_id)]
+                       | _ => []
+                       end in
+                let subt :=
+                    tree_map (fun '((restart, i) : bool * _) =>
+                                if restart then
+                                  initial_decoded_instruction_state i.(ins_id) i.(ins_loc) i.(ins_ast)
+                                else i)
+                             (fun l => l) subt in
+                (restarted_iids, subt))
+             subts) in
+    (List.concat restarted_iids, subts).
+
   Section Handle_instruction_instance.
     Variable iid : instruction_id.
 
@@ -1611,34 +1696,33 @@ Module Make (Arc : ArcSig) (ArcThread : ArcThreadSig with Module Arc := Arc) : T
          ;; ret rids.
 
 
-    Definition try_sat_mem_load_op_forwarding (rid : mem_read_id)
+    Definition try_sat_mem_load_op_forwarding '((MemReadID rid) : mem_read_id)
       : itree F (bool * list instruction_id) :=
-      (* FIXME: *)
-      let iid := iid in
-      guard false
-      ;; ret (false, []).
-
-    Definition apply_restarts (subts : list restart_ins_tree)
-      : (list instruction_id * list ins_tree) :=
-      let '(restarted_iids, subts) :=
-          List.split
-            (List.map
-               (fun subt =>
-                  let restarted_iids :=
-                      n <- tree_to_list_preorder subt
-                      ;; match n with
-                         | inl (true, i) => [i.(ins_id)]
-                         | _ => []
-                         end in
-                  let subt :=
-                      tree_map (fun '((restart, i) : bool * _) =>
-                                  if restart then
-                                    initial_decoded_instruction_state i.(ins_id) i.(ins_loc) i.(ins_ast)
-                                  else i)
-                               (fun l => l) subt in
-                  (restarted_iids, subt))
-               subts) in
-      (List.concat restarted_iids, subts).
+      s <- get
+      ;; '(pref, ins, subts) <- try_get_dec_instruction_state iid s
+      ;; 'tt <- guard (ArcThread.mem_read_request_cand pref ins)
+      ;; rs <- try_unwrap_option ins.(ins_mem_reads)
+                                      "try_sat_mem_load_op_forwarding: no mem reads."
+      ;; rr <- try_unwrap_option (List.nth_error rs.(rs_reads) rid)
+                                "try_sat_mem_load_op_forwarding: missing read"
+      ;; unsat_slcs <- try_unwrap_option (List.nth_error rs.(rs_unsat_slcs) rid)
+                                        "try_sat_mem_load_op_forwarding: missing unsat slices."
+      ;; rf_old <- try_unwrap_option (List.nth_error rs.(rs_reads_from) rid)
+                                        "try_sat_mem_load_op_forwarding: missing rid."
+      ;; '(rf_new, unsat_slcs) <- try_unwrap_option
+                                   (possible_write_forwarding s pref ins unsat_slcs)
+                                   "try_sat_mem_load_op_forwarding: unexpected None"
+      ;; guard (isTrue (rf_new <> []))
+      ;; let rs := (rs <| rs_unsat_slcs := list_replace_nth rid unsat_slcs
+                                                            rs.(rs_unsat_slcs) |>)
+                     <| rs_reads_from := list_replace_nth rid (rf_old ++ rf_new)
+                                                          rs.(rs_reads_from) |> in
+         let ins := ins <| ins_mem_reads := Some rs |> in
+         let '(restarted_iids, subts) :=
+             apply_restarts (sat_mem_read_restarts s (inl rf_new) subts) in
+         let s := update_dec_instruction_state_and_subts iid ins subts s in
+         'tt <- put s
+      ;; ret (isTrue (unsat_slcs = []), restarted_iids).
 
     Definition try_sat_mem_load_op_from_storage '((MemReadID rid) : mem_read_id)
       : itree F (list instruction_id) :=
