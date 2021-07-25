@@ -538,6 +538,9 @@ Module Type ArcThreadSig.
   Parameter propagate_write_cand : state -> list decoded_instruction_state
                                    -> decoded_instruction_state -> mem_write -> bool.
 
+  Parameter finish_cand : state -> list decoded_instruction_state
+                          -> decoded_instruction_state -> bool.
+
   Parameter possible_write_forwarding : state -> list decoded_instruction_state
                                         -> decoded_instruction_state -> list mem_slc
                                         -> option (mem_reads_from * list mem_slc).
@@ -1317,6 +1320,114 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
                     end)
                pref.
 
+  Definition is_fixed_store pref ins : bool :=
+    is_store ins.(ins_ast)
+    && dataflow_committed pref ins.
+
+  Fixpoint finish_mem_reads_co_check_helper
+             (s : state)
+             (pref : list decoded_instruction_state)
+             (might_be_restarted : list instruction_id)
+             (rf : mem_reads_from)
+    : bool:=
+    match pref with
+    | [] => true
+    | prev_ins::pref =>
+      (* memory address of 'prev_ins' is fully determined *)
+      fully_determined_address pref prev_ins
+
+      (* to simplify the rest of the checks we also require that 'prev_ins' has
+         made enough steps to guarantee all the read/write requests are
+         recorded in the instruction_instance state. *)
+      && all_writes_reads_are_calculated prev_ins
+
+      && match prev_ins.(ins_mem_reads) with
+         | Some prev_reads =>
+           (* Overlapping reads must be satisfied and non-restartable. *)
+           finished_load_part prev_ins (* optimisation (but maybe necessary for AMOs?) *)
+           || (forallb (fun '(_, (slc, _)) =>
+                         forallb (fun '(r, uslcs) =>
+                                    (non_empty_intersection r.(read_footprint) slc)
+                                      --->
+                                      (isTrue (~ (In prev_ins.(ins_id) might_be_restarted))
+                                       && forallb (non_empty_intersection slc) uslcs))
+                                 (List.combine prev_reads.(rs_reads) prev_reads.(rs_unsat_slcs)))
+                      rf)
+         | None => true
+         end
+
+      && match prev_ins.(ins_mem_writes) with
+         | Some prev_writes =>
+           forallb (fun write =>
+                      forallb (fun '(_, (slc, _)) =>
+                                 negb (non_empty_intersection slc write.(write_footprint)))
+                              rf)
+                   (unpropagated_writes prev_writes)
+         | None => true
+         end
+
+      && (
+        (* filter out slices that were forwarded from fixed writes *)
+        let rf :=
+            if is_fixed_store pref prev_ins then
+              List.filter (fun '((tid, iid, _), _) =>
+                             isTrue (tid <> s.(id) \/ iid <> prev_ins.(ins_id)))
+                          rf
+            else rf
+        in
+
+        (* FIXME: I think the following is an optimisation, but not necessary
+        let rf = parts_of_read_rf_not_overwritten_by_write
+                               rf read_request prev_ins in *)
+
+        if decide (rf = []) then true
+        else finish_mem_reads_co_check_helper s pref might_be_restarted rf)
+    end.
+
+
+  (* pop might-access-same-address (for loads) The closest po-previous write to
+     the same address must be propagated and all memory accesses in-between must
+     have a fully determined addresses, except if the closest po-previous write
+     is a write that was forwarded to the load, then it does not have to be
+     propagated, just "fixed" (i.e. instructions feeding ALL its registers are
+     determined). *)
+  Definition finish_mem_reads_co_check
+             (s : state)
+             (pref : list decoded_instruction_state)
+             (reads : mem_reads_state)
+    : bool :=
+    (* any observable behaviour that depends on the load being finished ([R];
+       ctrl; [W] or [R]; ctrl+isb; [R] or [Raq]; po; [W] , etc) also depends on
+       the po-prefix having fully determined addresses, hence it is ok for
+       might_be_restarted to over-approximate if the po-prefix does not have
+       fully determined addresses *)
+    let might_be_restarted :=
+        (* to simplify the rest of the checks we also require that iprev has
+           made enough steps to guarantee all the read/write requests are
+           recorded in the instruction state. *)
+        if preceding_memory_accesses_have_fully_determined_address pref
+           && preceding_reads_writes_are_calculated pref then
+          might_be_restarted s pref
+        else List.map ins_id (List.filter (fun i => negb i.(ins_finished)) pref) in
+
+    forallb (finish_mem_reads_co_check_helper s pref might_be_restarted)
+            reads.(rs_reads_from).
+
+  Definition finish_cand (s : state) (pref : list decoded_instruction_state)
+             (ins : decoded_instruction_state)
+    : bool :=
+    dataflow_committed pref ins
+    && controlflow_committed pref
+    && match ins.(ins_mem_reads) with
+       | Some reads =>
+         (forallb (fun prev_ins =>
+                     (is_load_acquire prev_ins.(ins_ast))
+                       ---> finished_load_part prev_ins)
+                  pref)
+         && finish_mem_reads_co_check s pref reads
+       | None => true
+       end.
+
   Local Instance slice_prod_r {T S} `{Slice S} : Slice (T * S) :=
     { start := fun '(_, s) => Utils.start s;
       size := fun '(_, s) => Utils.size s;
@@ -1621,6 +1732,8 @@ Module Make (Arc : ArcSig) (ArcThread : ArcThreadSig with Module Arc := Arc) : T
       (* FIXME: check finish condition *)
       s <- get
       ;; '(pref, ins, _) <- try_get_dec_instruction_state iid s
+      ;; guard (finish_cand s pref ins)
+      (* FIXME: if the instruction is a branch, prune the instruction tree *)
       ;; let ins := ins <| ins_finished := true |> in
          let s := update_dec_instruction_state iid ins s in
          put s.
