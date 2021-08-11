@@ -64,8 +64,9 @@ Module Base (Arc : ArcSig).
     | ThECommitStoreInstruction : _E (list mem_write_id)
     (* [ThEPropagateStoreOp] returns a list of iids that should be restarted. *)
     | ThEPropagateStoreOp : mem_write_id -> _E (list instruction_id)
-    | ThECompleteStoreOps : _E unit.
-    (* Workaround: parameter can't be instantiated by an inductive type *)
+    | ThECompleteStoreOps : _E unit
+    (** Barrier events *)
+    | ThEBarrier : forall A, barE A -> _E A.
     Definition E := _E.
 
     #[global] Instance showable_E : forall A, Showable (E A) :=
@@ -85,6 +86,7 @@ Module Base (Arc : ArcSig).
                   | ThECommitStoreInstruction => "ThECommitStoreInstruction"
                   | ThEPropagateStoreOp wid => "ThEPropagateStoreOp " ++ show wid
                   | ThECompleteStoreOps => "ThECompleteStoreOps"
+                  | ThEBarrier _ e => "ThEBarrier (" ++ show e ++ ")"
                   end%string
       }.
 
@@ -129,11 +131,11 @@ Module Base (Arc : ArcSig).
                          v <- trigger ThECompleteLoadOps
                          ;; ret (inr v)
                        | _ =>
-                         rid <- trigger (Choose rids)
+                         rid <- trigger (Choose "mem read of load" rids)
                          ;; let reads := [trigger (ThESatMemLoadOpForwarding rid);
                                          (restarts <- trigger (ThESatMemLoadOpStorage rid)
                                           ;; ret (true, restarts))] in
-                            read <- nondet reads
+                            read <- nondet "mem read source" reads
                          ;; read <- try_unwrap_option read
                                                      "lift_mem_read: nondet out of range"
                          ;; is_sat <- exclusive_block
@@ -163,7 +165,7 @@ Module Base (Arc : ArcSig).
                          'tt <- trigger ThECompleteStoreOps
                          ;; ret (inr tt)
                        | _ =>
-                         wid <- trigger (Choose wids)
+                         wid <- trigger (Choose "mem write of store" wids)
                          ;; 'tt <- exclusive_block
                                     (restarts <- trigger (ThEPropagateStoreOp wid)
                                      ;; denote_restarts restarts)
@@ -183,6 +185,12 @@ Module Base (Arc : ArcSig).
         | MemEWriteVal val => lift_mem_write_val val
         end.
 
+    Definition lift_barE {F}
+               `{E -< F}
+               `{exceptE error -< F}
+      : barE ~> itree F :=
+      fun _ e => trigger (ThEBarrier _ e).
+
     Definition lift_ins_sem {F}
                `{E -< F} `{chooseE mem_read_id -< F}
                `{chooseE mem_write_id -< F} `{chooseE nat -< F}
@@ -190,7 +198,7 @@ Module Base (Arc : ArcSig).
                `{exceptE error -< F}
       : itree insSemE ~> itree F :=
       fun _ it =>
-        let h := case_ lift_regE lift_memE in
+        let h := case_ lift_regE (case_ lift_memE lift_barE) in
         resum_it _ (interp h it).
 
     Definition spawn_instruction {F}
@@ -237,11 +245,13 @@ Module Base (Arc : ArcSig).
           | ThECommitStoreInstruction => true
           | ThEPropagateStoreOp wid => false
           | ThECompleteStoreOps => true
+          (** Barrier events *)
+          | ThEBarrier _ _ => true
           end
         | inr1 (inl1 _) => true (* chooseE mem_read_id *)
         | inr1 (inr1 (inl1 _)) => true (* chooseE mem_write_id *)
         | inr1 (inr1 (inr1 (inl1 _))) => true (* chooseE nat *)
-        | inr1 (inr1 (inr1 (inr1 (inl1 _)))) (* exceptE error *)
+        | inr1 (inr1 (inr1 (inr1 (inl1 _)))) => true (* exceptE error *)
         | inr1 (inr1 (inr1 (inr1 (inr1 _)))) => true (* debugE *)
         end.
 
@@ -285,7 +295,8 @@ Module Base (Arc : ArcSig).
                `{debugE -< F}
       : ktree F instruction_id (Types.result unit unit) :=
       fun iid =>
-        resum_it _ (scheduler spawn_instruction
+        resum_it _ (scheduler "schedule instructions"
+                              spawn_instruction
                               is_eager
                               (fun r1 r2 => match r1, r2 with
                                          | Accept tt, Accept tt => Accept tt
@@ -558,9 +569,26 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
   Section InstructionKind.
     Variable a : ast.
 
-    Definition is_strong_memory_barrier : bool := (* FIXME: *) let a := a in false.
-    Definition is_ld_barrier : bool := (* FIXME: *) let a := a in false.
-    Definition is_st_barrier : bool := (* FIXME: *) let a := a in false.
+    Definition is_strong_memory_barrier : bool :=
+      match a with
+      | DMB MBReqDomain_FullSystem MBReqTypes_All => true
+      | _ => false
+      end.
+    Definition is_ld_barrier : bool :=
+      match a with
+      | DMB MBReqDomain_FullSystem MBReqTypes_Reads => true
+      | _ => false
+      end.
+    Definition is_st_barrier : bool :=
+      match a with
+      | DMB MBReqDomain_FullSystem MBReqTypes_Writes => true
+      | _ => false
+      end.
+    Definition is_memory_barrier : bool :=
+      match a with
+      | DMB MBReqDomain_FullSystem _ => true
+      | _ => false
+      end.
     Definition is_instruction_barrier : bool := (* FIXME: *) let a := a in false.
 
     Definition is_load : bool :=
@@ -1418,6 +1446,8 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
     : bool :=
     dataflow_committed pref ins
     && controlflow_committed pref
+
+    (** Load *)
     && match ins.(ins_mem_reads) with
        | Some reads =>
          (forallb (fun prev_ins =>
@@ -1426,16 +1456,43 @@ Module SimpleArmv8A : ArcThreadSig with Module Arc := SimpleA64InsSem.Armv8A.
                   pref)
          && finish_mem_reads_co_check s pref reads
        | None => true
-       end.
+       end
 
-  Local Instance slice_prod_r {T S} `{Slice S} : Slice (T * S) :=
-    { start := fun '(_, s) => Utils.start s;
-      size := fun '(_, s) => Utils.size s;
-      sub_slice := fun '(v, s) start size =>
-                     match sub_slice s start size with
-                     | Some s' => Some (v, s')
-                     | None => None
-                     end }.
+    (** Barrier *)
+    (* Commit order between barriers *)
+    && ((is_strong_memory_barrier ins.(ins_ast))
+          ---> (forallb (fun prev_ins =>
+                          (is_memory_barrier prev_ins.(ins_ast)
+                           || is_instruction_barrier prev_ins.(ins_ast))
+                            ---> prev_ins.(ins_finished))
+                        pref))
+    && (forallb (fun prev_ins =>
+                   (is_strong_memory_barrier prev_ins.(ins_ast))
+                     ---> prev_ins.(ins_finished))
+                pref)
+
+    && ((is_strong_memory_barrier ins.(ins_ast))
+          ---> (forallb (fun prev_ins =>
+                           (is_viable_memory_access prev_ins)
+                             ---> prev_ins.(ins_finished))
+                        pref))
+
+    && ((is_instruction_barrier ins.(ins_ast))
+          ---> preceding_memory_accesses_have_fully_determined_address pref)
+
+    && ((is_ld_barrier ins.(ins_ast))
+          ---> (forallb (fun prev_ins =>
+                           (is_load prev_ins.(ins_ast))
+                             ---> finished_load_part prev_ins)
+                        pref))
+
+    && ((is_st_barrier ins.(ins_ast))
+          ---> (forallb (fun prev_ins =>
+                           (is_store prev_ins.(ins_ast))
+                             ---> prev_ins.(ins_finished))
+                        pref)).
+
+  Existing Instance slice_prod_r.
 
   Definition possible_write_forwarding
              (s : state)
@@ -1935,6 +1992,14 @@ Module Make (Arc : ArcSig) (ArcThread : ArcThreadSig with Module Arc := Arc) : T
       let iid := iid in
       ret tt.
 
+    (* TODO: We don't do anything here, the real checks are when the instruction
+       is being finished. *)
+    Definition handle_barrier : barE ~> itree F :=
+      fun _ e =>
+        match e with
+        | BarEMem kind => ret tt
+        end.
+
   End Handle_instruction_instance.
 
   Definition handle_E {F}
@@ -1962,6 +2027,8 @@ Module Make (Arc : ArcSig) (ArcThread : ArcThreadSig with Module Arc := Arc) : T
           | ThECommitStoreInstruction => try_commit_store_instruction iid
           | ThEPropagateStoreOp wid => try_propagate_store_op iid wid
           | ThECompleteStoreOps => try_complete_store_ops iid
+          (* Barrier events *)
+          | ThEBarrier _ e => handle_barrier _ e
           end in
       'tt <- trigger (Debug ("handle_E: " ++ show e))
       ;; it.

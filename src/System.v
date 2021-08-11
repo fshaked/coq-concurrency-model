@@ -98,7 +98,8 @@ Module Make (Arc : ArcSig)
              (tids : list thread_id)
     : itree E unit :=
     let its := List.map (fun tid => (tid, thread_it tid)) tids in
-    let it := scheduler (fun tid => Ret (Reject tt)) (* spawn *)
+    let it := scheduler "schedule threads"
+                        (fun tid => Ret (Reject tt)) (* spawn *)
                         (* TODO: do we want to support spawning of new threads? *)
                         (*       Probably not. *)
                         is_eager
@@ -181,6 +182,7 @@ Module Make (Arc : ArcSig)
       ;; let it := run_state it (thr_state : Thread.state) in
          let it := run_state it s.(storage) in
          '(sto_state, (thr_state, ans)) <- resum_it _ it
+      ;; 'tt <- trigger (Debug ("STATE"))
       ;; let ts := list_replace_nth tidn thr_state s.(threads) in
          put (s <| storage := sto_state |> <| threads := ts |>)
       ;; ret ans.
@@ -239,7 +241,7 @@ Module Make (Arc : ArcSig)
     Notation R := (state * unit)%type.
 
     Variant step_result :=
-    | SNondet : list (itree systemE R * bool) -> step_result
+    | SNondet : string -> list (itree systemE R * bool) -> step_result
     | SNext : option string -> itree systemE R -> step_result
     | SAccept : R -> step_result
     | SReject : step_result
@@ -253,48 +255,48 @@ Module Make (Arc : ArcSig)
         match o with
         | inl1 o' => (* chooseE (thread_id * bool) *)
           match o' in chooseE _ Y return X = Y -> _ with
-          | Choose l =>
+          | Choose desc l =>
             fun pf =>
-              SNondet (List.map (fun '(tid, eager) =>
-                                   let i := eq_rect_r (fun T => T) (tid, eager) pf in
-                                   (k i, eager))
-                                l)
+              SNondet desc (List.map (fun '(tid, eager) =>
+                                        let i := eq_rect_r (fun T => T) (tid, eager) pf in
+                                        (k i, eager))
+                                     l)
           end eq_refl
         | inr1 (inl1 o') => (* chooseE (instruction_id * bool) *)
           match o' in chooseE _ Y return X = Y -> _ with
-          | Choose l =>
+          | Choose desc l =>
             fun pf =>
-              SNondet (List.map (fun '(iid, eager) =>
-                                   let i := eq_rect_r (fun T => T) (iid, eager) pf in
-                                   (k i, eager))
-                                l)
+              SNondet desc (List.map (fun '(iid, eager) =>
+                                        let i := eq_rect_r (fun T => T) (iid, eager) pf in
+                                        (k i, eager))
+                                     l)
           end eq_refl
         | inr1 (inr1 (inl1 o')) => (* chooseE mem_read_id *)
           match o' in chooseE _ Y return X = Y -> _ with
-          | Choose l =>
+          | Choose desc l =>
             fun pf =>
-              SNondet (List.map (fun rid =>
-                                   let i := eq_rect_r (fun T => T) rid pf in
-                                   (k i, false))
-                                l)
+              SNondet desc (List.map (fun rid =>
+                                        let i := eq_rect_r (fun T => T) rid pf in
+                                        (k i, false))
+                                     l)
           end eq_refl
         | inr1 (inr1 (inr1 (inl1 o'))) => (* chooseE mem_write_id *)
           match o' in chooseE _ Y return X = Y -> _ with
-          | Choose l =>
+          | Choose desc l =>
             fun pf =>
-              SNondet (List.map (fun wid =>
+              SNondet desc (List.map (fun wid =>
                                    let i := eq_rect_r (fun T => T) wid pf in
                                    (k i, false))
                                 l)
           end eq_refl
         | inr1 (inr1 (inr1 (inr1 (inl1 o')))) => (* chooseE nat *)
           match o' in chooseE _ Y return X = Y -> _ with
-          | Choose l =>
+          | Choose desc l =>
             fun pf =>
-              SNondet (List.map (fun n =>
-                                   let i := eq_rect_r (fun T => T) n pf in
-                                   (k i, false))
-                                l)
+              SNondet desc (List.map (fun n =>
+                                        let i := eq_rect_r (fun T => T) n pf in
+                                        (k i, false))
+                                     l)
           end eq_refl
         | inr1 (inr1 (inr1 (inr1 (inr1 (inl1 (Throw (Disabled tt))))))) => SReject
         | inr1 (inr1 (inr1 (inr1 (inr1 (inr1 (inl1 (Throw (Error msg)))))))) => SError msg

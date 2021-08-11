@@ -212,13 +212,13 @@ End WrapEvent.
 
 Section Nondet.
   Variant chooseE (T : Type) : Type -> Type :=
-  | Choose : list T -> chooseE T T.
+  | Choose : string -> list T -> chooseE T T.
   #[global] Arguments Choose {T}.
 
-  Definition nondet {E T} `{chooseE nat -< E}
+  Definition nondet {E T} `{chooseE nat -< E} description
     : ktree E (list T) (option T) :=
     fun l =>
-      n <- trigger (Choose (List.seq 0 (List.length l)))
+      n <- trigger (Choose description (List.seq 0 (List.length l)))
       ;; ret (List.nth_error l n).
 End Nondet.
 
@@ -245,11 +245,14 @@ Section Scheduler.
     ;; 'tt <- trigger EndExc
     ;; ret r.
 
-  CoFixpoint scheduler {E S I R R'}
-             `{RelDec S (@eq S)}
-             (spawn : ktree (schedulerE S +' E) S R)
-             (hash_next : itree (schedulerE S +' E) R -> I)
-             (fold_results : R' -> R -> R')
+  Context {E : Type -> Type} {S I R R' : Type} `{RelDec S (@eq S)}.
+
+  Variable description : string.
+  Variable spawn : ktree (schedulerE S +' E) S R.
+  Variable hash_next : itree (schedulerE S +' E) R -> I.
+  Variable fold_results : R' -> R -> R'.
+
+  CoFixpoint scheduler
              (acc_result : R')
              (its : alist S (itree (schedulerE S +' E) R))
              (exclusive : option S)
@@ -261,7 +264,7 @@ Section Scheduler.
            | Some id => Ret id
            | None =>
              let es := List.map (fun '(id, it) => (id, hash_next it)) its in
-             '(id, _) <- trigger (Choose es)
+             '(id, _) <- trigger (Choose description es)
              ;; ret id
            end
       ;; let it := match lookup id its with
@@ -271,10 +274,10 @@ Section Scheduler.
          match observe it with
          | RetF r =>
            let its := Maps.remove id its in
-           Tau (scheduler spawn hash_next fold_results (fold_results acc_result r) its None)
+           Tau (scheduler (fold_results acc_result r) its None)
          | TauF it =>
            let its := Maps.add id it its in
-           Tau (scheduler spawn hash_next fold_results acc_result its exclusive)
+           Tau (scheduler acc_result its exclusive)
          | @VisF _ _ _ X o k =>
            match o with
            | inl1 o' =>
@@ -284,7 +287,7 @@ Section Scheduler.
                fun pf =>
                  let it := k (eq_rect_r (fun T => T) tt pf) in
                  let its := Maps.add id' (spawn id') (Maps.add id it its) in
-                 Tau (scheduler spawn hash_next fold_results acc_result its exclusive)
+                 Tau (scheduler acc_result its exclusive)
              | Kill id' =>
                fun pf =>
                  let it := k (eq_rect_r (fun T => T) tt pf) in
@@ -294,21 +297,21 @@ Section Scheduler.
                                     (* A thread just killed itslef *)
                                     None
                                   else exclusive in
-                 Tau (scheduler spawn hash_next fold_results acc_result its exclusive)
+                 Tau (scheduler acc_result its exclusive)
              | StartExc =>
                fun pf =>
                  let it := k (eq_rect_r (fun T => T) tt pf) in
                  let its := Maps.add id it its in
-                 Tau (scheduler spawn hash_next fold_results acc_result its (Some id))
+                 Tau (scheduler acc_result its (Some id))
              | EndExc =>
                fun pf =>
                  let it := k (eq_rect_r (fun T => T) tt pf) in
                  let its := Maps.add id it its in
-                 Tau (scheduler spawn hash_next fold_results acc_result its None)
+                 Tau (scheduler acc_result its None)
              end eq_refl
            | inr1 o' =>
              Vis (inr1 o') (fun x => let its := Maps.add id (k x) its in
-                                  scheduler spawn hash_next fold_results acc_result its exclusive)
+                                  scheduler acc_result its exclusive)
            end
          end
     end.
@@ -319,6 +322,15 @@ Section Slices.
   Class Slice (T : Type) := { start : T -> nat;
                               size : T -> nat;
                               sub_slice : T -> nat -> nat -> option T }.
+
+  Instance slice_prod_r {T S} `{Slice S} : Slice (T * S) :=
+    { start := fun '(_, s) => start s;
+      size := fun '(_, s) => size s;
+      sub_slice := fun '(v, s) start size =>
+                     match sub_slice s start size with
+                     | Some s' => Some (v, s')
+                     | None => None
+                     end }.
 
   (* [is_sub_slice m n] is [true] iff [m] is contained in [n]. *)
   Definition contained {S S'} `{Slice S} `{Slice S'}

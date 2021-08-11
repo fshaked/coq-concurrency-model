@@ -108,7 +108,7 @@ Definition test_ldr :=
                           (* [0x1004] *) ; LDR X1,[X0]
                         ]%a64.
 
-Definition test_MP :=
+Definition test_MP1 := (* MP *)
   (data_writes [ ((* [0x5000] *) 20480, [0; 0; 0; 0; 0; 0; 0; 0])
                  ; ((* [0x5008] *) 20488, [0; 0; 0; 0; 0; 0; 0; 0]) ])
     ++ (code_writes 4096 [ (* Thread 0 *)
@@ -124,6 +124,26 @@ Definition test_MP :=
                       (* [0x2008] *) ; LDR X2,[X0]
                       (* [0x201c] *) ; LDR X3,[X1]
                     ]%a64).
+
+Definition test_MP2 := (* MP+dmb.sys *)
+  (data_writes [ ((* [0x5000] *) 20480, [0; 0; 0; 0; 0; 0; 0; 0])
+                 ; ((* [0x5008] *) 20488, [0; 0; 0; 0; 0; 0; 0; 0]) ])
+    ++ (code_writes 4096 [ (* Thread 0 *)
+                      MOVZ X0,#20480
+                      ; MOVZ X1,#20488
+                      ; MOVZ X2,#1
+                      ; STR X2,[X0]
+                      (* ; DMB SY *)
+                      (* ; STR X2,[X1] *)
+                    ]%a64)
+    ++ (code_writes 8192 [ (* Thread 1 *)
+                      MOVZ X0,#20488
+                      ; MOVZ X1,#20480
+                      ; LDR X2,[X0]
+                      ; DMB SY
+                      (* ; LDR X3,[X1] *)
+                    ]%a64).
+
 From Coq Require
      Extraction
      ExtrOcamlBasic
@@ -142,7 +162,7 @@ Separate Extraction
          (* test_and *)
          (* test_str *)
          (* test_ldr *)
-         test_MP
+         test_MP2
 .
 
 Cd "..".

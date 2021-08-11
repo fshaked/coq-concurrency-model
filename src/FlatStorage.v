@@ -44,14 +44,7 @@ Module Make (Arc : ArcSig) : StorageSig Arc.
     : state :=
     {| mem := mem |}.
 
-  Local Instance slice_prod_r {T S} `{Slice S} : Slice (T * S) :=
-    { start := fun '(_, s) => Utils.start s;
-      size := fun '(_, s) => Utils.size s;
-      sub_slice := fun '(v, s) start size =>
-                     match sub_slice s start size with
-                     | Some s' => Some (v, s')
-                     | None => None
-                     end }.
+  Existing Instance slice_prod_r.
 
   Definition get_slcs_val (slcs : list mem_slc) (s : state) : option mem_reads_from :=
     match

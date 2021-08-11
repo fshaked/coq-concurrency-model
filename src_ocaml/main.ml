@@ -35,6 +35,7 @@ let print_chars_endline cs =
 type exec_result =
   | Accept of FlatModel.Model.state
   | Reject
+  | RejectE
   | Error
 ;;
 
@@ -45,21 +46,37 @@ let prefix d =
 
 let rec exec_test d it =
   begin match FlatModel.Model.step it with
-  | SNondet its ->
+  | SNondet (desc, its) ->
+     Printf.printf "%s %s\n" (prefix d) (chars_to_string desc);
      let (eager, not_eager) = List.partition snd
                                 (* its in *)
                                 (List.rev its) in
-     Printf.printf "%s Nondet %d (%d eager)\n" (prefix d) (List.length its) (List.length eager);
-     if eager = [] then nondet d not_eager else eager_nondet d eager
-     (* begin match eager_nondet d eager with
-      * | Reject -> nondet d not_eager
-      * | x -> x
-      * end *)
+     if not_eager = [] then begin
+         Printf.printf "%s Eager %d\n" (prefix d) (List.length eager);
+         eager_nondet d eager
+       end
+     else if eager = [] then begin
+         Printf.printf "%s Nondet %d\n" (prefix d) (List.length its);
+         nondet d not_eager
+       end
+     else begin
+         Printf.printf "%s Nondet %d (%d eager)\n" (prefix d) (List.length its) (List.length eager);
+         begin match eager_nondet d eager with
+         | Reject -> nondet d not_eager
+         | x -> x
+         end
+       end
   | SNext (Some dbg, it) ->
-     Printf.printf "%s %s\n" (prefix d) (chars_to_string dbg);
-     exec_test d it
+     let dbg = chars_to_string dbg in
+     Printf.printf "%s %s\n" (prefix d) dbg;
+     begin match exec_test d it with
+     | Reject when dbg = "STATE" ->
+        Printf.printf "%s Strong reject\n" (prefix d);
+        RejectE
+     | x -> x
+     end
   | SNext (None, it) ->
-     (* print_string "."; *)
+     (* Printf.printf "%s Tau\n" (prefix d); *)
      exec_test d it
   | SAccept (s, _) -> Accept s
   | SReject ->
@@ -73,11 +90,11 @@ and eager_nondet d its =
   begin match its with
   | (it, _)::its ->
      begin match exec_test d it with
-     (* | Reject -> eager_nondet d its *)
+     | Reject -> eager_nondet d its
      | x -> x
      end
   | _ ->
-     Printf.printf "%s Eager disabled\n" (prefix d);
+     Printf.printf "%s All eagers disabled\n" (prefix d);
      Reject
   end
 and nondet d its =
@@ -86,6 +103,7 @@ and nondet d its =
      begin match exec_test (d+1) it with
      | Accept res -> Accept res
      | Reject -> nondet d its
+     | RejectE -> nondet d its
      | Error -> Error
      end
   | _ ->
@@ -99,7 +117,7 @@ let main =
 
   (* let (test, ts) = (test_and, 1) in *)
   (* let (test, ts) = (test_ldr, 1) in *)
-  let (test, ts) = (test_MP, 2) in
+  let (test, ts) = (test_MP2, 2) in
 
   begin match exec_test 1 (init_test test (Big_int.big_int_of_int ts)) with
   | Accept s -> print_chars_endline (FlatModel.show_state s)

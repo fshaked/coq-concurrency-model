@@ -117,6 +117,41 @@ Module AArch64Core <: InsSemCoreSig.
           end%string
     }.
 
+  Variant MBReqDomain :=
+  | MBReqDomain_Nonshareable
+  | MBReqDomain_InnerShareable
+  | MBReqDomain_OuterShareable
+  | MBReqDomain_FullSystem.
+
+  Variant MBReqTypes :=
+  | MBReqTypes_Reads
+  | MBReqTypes_Writes
+  | MBReqTypes_All.
+
+  Definition mem_barrier_kind : Type := MBReqDomain * MBReqTypes.
+
+  Instance showable_mem_barrier_kind : Showable mem_barrier_kind :=
+    { show :=
+        fun b => match b with
+              | (MBReqDomain_FullSystem, MBReqTypes_All)    => "full system, reads and writes"
+              | (MBReqDomain_FullSystem, MBReqTypes_Writes) => "full system, writes"
+              | (MBReqDomain_FullSystem, MBReqTypes_Reads)  => "full system, reads"
+              (* ISH *)
+              | (MBReqDomain_InnerShareable, MBReqTypes_All)    => "inner shareable, reads and writes"
+              | (MBReqDomain_InnerShareable, MBReqTypes_Writes) => "inner shareable, writes"
+              | (MBReqDomain_InnerShareable, MBReqTypes_Reads)  => "inner shareable, reads"
+              (* NSH *)
+              | (MBReqDomain_Nonshareable, MBReqTypes_All)    => "non-shareable, reads and writes"
+              | (MBReqDomain_Nonshareable, MBReqTypes_Writes) => "non-shareable, writes"
+              | (MBReqDomain_Nonshareable, MBReqTypes_Reads)  => "non-shareable, reads"
+              (* OSH *)
+              | (MBReqDomain_OuterShareable, MBReqTypes_All)    => "outer shareable, reads and writes"
+              | (MBReqDomain_OuterShareable, MBReqTypes_Writes) => "outer shareable, writes"
+              | (MBReqDomain_OuterShareable, MBReqTypes_Reads)  => "outer shareable, reads"
+              end%string
+    }.
+
+
   Variant _ast : Type :=
   (* NOP *)
   | Nop : _ast
@@ -128,7 +163,8 @@ Module AArch64Core <: InsSemCoreSig.
   | LogOp : log_op -> gpr -> gpr -> operand -> _ast
   (* offset *)
   | BranchImm : word 28 -> _ast
-  | MovZ : gpr -> word 16 -> _ast.
+  | MovZ : gpr -> word 16 -> _ast
+  | DMB : MBReqDomain -> MBReqTypes -> _ast.
   Definition ast := _ast.
 
   Instance showable_ast : Showable ast :=
@@ -146,6 +182,24 @@ Module AArch64Core <: InsSemCoreSig.
             "B #" ++ show (wordToZ imm)
           | MovZ dst imm =>
             "MOVZ " ++ show dst ++ ",#" ++ show (wordToNat imm)
+          | DMB dom typ =>
+            "DMB " ++ match dom, typ with
+                     | MBReqDomain_FullSystem, MBReqTypes_All    => "SY"
+                     | MBReqDomain_FullSystem, MBReqTypes_Writes => "ST"
+                     | MBReqDomain_FullSystem, MBReqTypes_Reads  => "LD"
+                     (* ISH *)
+                     | MBReqDomain_InnerShareable, MBReqTypes_All    => "ISH"
+                     | MBReqDomain_InnerShareable, MBReqTypes_Writes => "ISHST"
+                     | MBReqDomain_InnerShareable, MBReqTypes_Reads  => "ISHLD"
+                     (* NSH *)
+                     | MBReqDomain_Nonshareable, MBReqTypes_All    => "NSH"
+                     | MBReqDomain_Nonshareable, MBReqTypes_Writes => "NSHST"
+                     | MBReqDomain_Nonshareable, MBReqTypes_Reads  => "NSHLD"
+                     (* OSH *)
+                     | MBReqDomain_OuterShareable, MBReqTypes_All    => "OSH"
+                     | MBReqDomain_OuterShareable, MBReqTypes_Writes => "OSHST"
+                     | MBReqDomain_OuterShareable, MBReqTypes_Reads  => "OSHLD"
+                     end
           end%string
     }.
 
@@ -169,6 +223,36 @@ Module AArch64Core <: InsSemCoreSig.
     Notation "'AND'" := LOAnd (in custom log_op) : a64_scope.
     Notation "'EOR'" := LOXor (in custom log_op) : a64_scope.
     Notation "'ORR'" := LOOr (in custom log_op) : a64_scope.
+
+    Declare Custom Entry mem_bar_opt.
+    Notation "'SY'"     := (MBReqDomain_FullSystem, MBReqTypes_All)
+                             (in custom mem_bar_opt) : a64_scope.
+    Notation "'ST'"     := (MBReqDomain_FullSystem, MBReqTypes_Writes)
+                             (in custom mem_bar_opt) : a64_scope.
+    Notation "'LD'"     := (MBReqDomain_FullSystem, MBReqTypes_Reads)
+                             (in custom mem_bar_opt) : a64_scope.
+    (* ISH *)
+    Notation "'ISH'"    := (MBReqDomain_InnerShareable, MBReqTypes_All)
+                             (in custom mem_bar_opt) : a64_scope.
+    Notation "'ISHST'"  := (MBReqDomain_InnerShareable, MBReqTypes_Writes)
+                             (in custom mem_bar_opt) : a64_scope.
+    Notation "'ISHLD'"  := (MBReqDomain_InnerShareable, MBReqTypes_Reads)
+                             (in custom mem_bar_opt) : a64_scope.
+    (* NSH *)
+    Notation "'NSH'"    := (MBReqDomain_Nonshareable, MBReqTypes_All)
+                             (in custom mem_bar_opt) : a64_scope.
+    Notation "'NSHST'"  := (MBReqDomain_Nonshareable, MBReqTypes_Writes)
+                             (in custom mem_bar_opt) : a64_scope.
+    Notation "'NSHLD'"  := (MBReqDomain_Nonshareable, MBReqTypes_Reads)
+                             (in custom mem_bar_opt) : a64_scope.
+    (* OSH *)
+    Notation "'OSH'"    := (MBReqDomain_OuterShareable, MBReqTypes_All)
+                             (in custom mem_bar_opt) : a64_scope.
+    Notation "'OSHST'"  := (MBReqDomain_OuterShareable, MBReqTypes_Writes)
+                             (in custom mem_bar_opt) : a64_scope.
+    Notation "'OSHLD'"  := (MBReqDomain_OuterShareable, MBReqTypes_Reads)
+                             (in custom mem_bar_opt) : a64_scope.
+
 
     Notation "'NOP'" := Nop (at level 10) : a64_scope.
 
@@ -216,6 +300,9 @@ Module AArch64Core <: InsSemCoreSig.
 
     Notation "'MOVZ' Xd , # i" := (MovZ Xd (natToWord 16 i))
                                     (Xd custom gpr at level 2, at level 10) : a64_scope.
+
+    Notation "'DMB' bar_opt" := (DMB (fst bar_opt) (snd bar_opt))
+                                  (bar_opt custom mem_bar_opt at level 2, at level 10) : a64_scope.
   End AArch64Notations.
 End AArch64Core.
 
@@ -236,10 +323,10 @@ Module AArch64 <: InsSemSig.
     end.
 
   Definition info_of_ast (a : ast) : info :=
+    let empty_info := {| input_regs := nil;
+                         output_regs := nil |} in
     match a with
-    | Nop =>
-      {| input_regs := nil;
-         output_regs := nil |}
+
     | Load dst addr off =>
       let iaregs := reg_slc_of_operand off in
       let iaregs := full_reg_of_reg (GPR addr) :: iaregs in
@@ -263,12 +350,15 @@ Module AArch64 <: InsSemSig.
       {| input_regs := iregs;
          output_regs := oregs |}
     | BranchImm off =>
-      {| input_regs := nil;
-         output_regs := nil |}
+      (* FIXME: nia info? *)
+      empty_info
     | MovZ dst imm =>
       let oregs := [full_reg_of_reg (GPR dst)] in
       {| input_regs := nil;
          output_regs := oregs |}
+    (* Empty Info: *)
+    | Nop
+    | DMB _ _ => empty_info
     end.
 
   Definition read_operand (o : operand) : itree insSemE (reg_val _) :=
@@ -328,6 +418,8 @@ Module AArch64 <: InsSemSig.
                           rs_size := 16 + (reg_size (GPR dst) - 16) |} in
         let val := Word.zext imm _ in
         trigger (RegEWrite dst_slc val)
+
+      | DMB dom typ => trigger (BarEMem (dom, typ))
       end.
 
   Notation "w '~' b" := (WS b w) (at level 7, left associativity, format "w '~' b") : word_scope.
@@ -487,6 +579,24 @@ Module AArch64 <: InsSemSig.
                | Some Rd => Some (MovZ Rd imm16)
                | _ => None
                end
+        else if binPat_match_list bs (read_binPat "1101010100 0 00 011 0011 ???? 1 01 11111") then
+               (* DMB *)
+               (*    [1101010100 0 00 011 0011 CRm 1 (opc=01) 11111] *)
+               let domain :=
+                   if (negb b9 && negb b8)%bool then MBReqDomain_FullSystem
+                   else match b11, b10 with
+                        | false, false => MBReqDomain_OuterShareable
+                        | false, true =>  MBReqDomain_Nonshareable
+                        | true, false =>  MBReqDomain_InnerShareable
+                        | true, true =>   MBReqDomain_FullSystem
+                        end in
+               let type := match b9, b8 with
+                           | false, false => MBReqTypes_All
+                           | false, true  => MBReqTypes_Reads
+                           | true, false  => MBReqTypes_Writes
+                           | true, true   => MBReqTypes_All
+                           end in
+               Some (DMB domain type)
         (* FIXME: *)
         else None
       | _ => None
@@ -621,6 +731,21 @@ Module AArch64 <: InsSemSig.
           Some (encode_word w)
         | _ => None
         end
+      | DMB dom typ =>
+        let '(CRm3, CRm2) := match dom with
+                             | MBReqDomain_OuterShareable => (false, false)
+                             | MBReqDomain_Nonshareable   => (false, true)
+                             | MBReqDomain_InnerShareable => (true, false)
+                             | MBReqDomain_FullSystem     => (true, true)
+                             end in
+        let '(CRm1, CRm0) := match typ with
+                             | MBReqTypes_Reads  => (false, true)
+                             | MBReqTypes_Writes => (true, false)
+                             | MBReqTypes_All    => (true, true)
+                             end in
+        let w := (WO~ 1~1~0~1~0~1~0~1~0~0 ~ 0 ~ 0~0 ~ 0~1~1 ~ 0~0~1~1 ~
+                    CRm3~CRm2~CRm1~CRm0 ~ 1 ~ 0~1 ~ 1~1~1~1~1)%word in
+        Some (encode_word w)
       end.
   End Encode.
 

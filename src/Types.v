@@ -178,8 +178,12 @@ Module Type InsSemCoreSig.
   needs this information earlier. *)
   Parameter mem_read_kind : Type.
   Context `{showable_mem_read_kind : Showable mem_read_kind}.
+
   Parameter mem_write_kind : Type.
   Context `{showable_mem_write_kind : Showable mem_write_kind}.
+
+  Parameter mem_barrier_kind : Type.
+  Context `{showable_mem_barrier_kind : Showable mem_barrier_kind}.
 
   Parameter ast : Type.
   Context `{showable_ast : Showable ast}.
@@ -188,6 +192,7 @@ End InsSemCoreSig.
 Module InsSemCoreFacts (Core : InsSemCoreSig).
   Export Core.
   Existing Instance Core.showable_reg.
+  Existing Instance Core.showable_mem_barrier_kind.
 
   Record reg_slc := { rs_reg : Core.reg;
                       rs_first_bit : nat;
@@ -296,14 +301,25 @@ Module InsSemCoreFacts (Core : InsSemCoreSig).
           match e with
           | RegERead s => "RegERead " ++ show s
           | RegEWrite s v => "RegEWrite " ++ show s ++ " " ++ show v
-          end%string }.
+          end%string
+    }.
 
   Variant memE : Type -> Type :=
   | MemERead : mem_slc -> memE mem_slc_val
   | MemEWriteFP : mem_slc -> memE unit
   | MemEWriteVal : mem_slc_val -> memE unit.
 
-  Definition insSemE := (regE +' memE).
+  Variant barE : Type -> Type :=
+  | BarEMem : mem_barrier_kind -> barE unit.
+
+  Instance showable_barE : forall A, Showable (barE A) :=
+    { show :=
+        fun e =>
+          match e with
+          | BarEMem k => "BarEMem " ++ show k
+          end%string
+    }.
+  Definition insSemE := (regE +' memE +' barE).
 End InsSemCoreFacts.
 
 Module Type InsSemSig.
@@ -337,6 +353,7 @@ Module ArcCoreFacts (ArcCore : ArcCoreSig).
   Export ArcCore.
   Existing Instance ArcCore.InsSem.Core.showable_mem_read_kind.
   Existing Instance ArcCore.InsSem.Core.showable_mem_write_kind.
+  Existing Instance ArcCore.InsSem.Core.showable_mem_barrier_kind.
 
   Record mem_read : Type :=
     mk_mem_read { read_id : mem_read_id;
